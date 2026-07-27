@@ -1,0 +1,15 @@
+Cadmus
+Copyright 2026 Chris Dobbyn
+
+This product includes software ported from Tesseract OCR
+(https://github.com/tesseract-ocr/tesseract), Copyright the Tesseract
+contributors, licensed under the Apache License, Version 2.0.
+
+Portions of this software are Go translations of Tesseract C++ source. Such
+files carry a header identifying the Tesseract source file they derive from.
+The translations are not verbatim: data structures, memory management, error
+handling, and concurrency have been reimplemented in idiomatic Go, and the
+legacy (pre-4.0) recognition engine, training tooling, debug viewer, and
+fixed-pitch analysis are not included.
+
+Tesseract's own NOTICE obligations, where applicable, are carried forward here.

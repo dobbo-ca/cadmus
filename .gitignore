@@ -1,0 +1,5 @@
+/bin/
+/graphify-out/
+*.traineddata
+testdata/corpus/images/
+.DS_Store
