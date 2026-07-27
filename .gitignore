@@ -2,6 +2,7 @@
 /graphify-out/
 *.traineddata
 testdata/corpus/images/
+testdata/golden/gen/gen
 .DS_Store
 
 # Beads / Dolt files (added by bd init)
