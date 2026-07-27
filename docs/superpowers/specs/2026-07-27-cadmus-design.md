@@ -425,8 +425,17 @@ checked in if licensing permits, otherwise fetched by a documented script.
 Kleio's `kleio-ocr` worker replaces its `tesseract` subprocess call with a Cadmus
 `Engine`. Kleio continues to rasterize PDFs and stamp text layers.
 
-Kleio's existing validation gate (`ocr_mean_confidence > 0.85` AND
-`coverage_similarity > 0.90`) reads `Page.MeanConfidence` unchanged.
+Kleio's validation gate does **not** consume a document-wide mean. Kleio Plan 2
+measures confidence *spatially*: per-word `conf` values with bounding boxes are
+bucketed into a 3×3 grid per sampled page, cells qualify at ≥5 words, and the gate
+reads the 10th percentile of qualifying cell means. A single mean would hide a page
+that is crisp at the top and mud at the bottom.
+
+Cadmus therefore must emit **geolocated per-word confidence** — `Word.Bounds` plus
+`Word.Confidence` — which is exactly the information Kleio currently parses out of
+`tesseract ... tsv`. Regional aggregation stays on Kleio's side; it is a policy
+decision, not an OCR one. `Page.MeanConfidence` remains as a convenience for
+simpler consumers and is not on Kleio's path.
 
 New in Kleio, enabled by G3: a UI affordance to correct a recognized word, which
 persists `(LineImage, Truth)` to a corrections table; a periodic fine-tune job; and
