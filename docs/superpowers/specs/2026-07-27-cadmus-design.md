@@ -282,7 +282,10 @@ fight `.traineddata` deserialization rather than help it.
 
 ## 5. Layers
 
-Each layer is independently shippable and independently useful.
+Each layer is independently shippable and independently useful. **Each layer gets
+its own implementation plan** — the project as a whole is far too large for one.
+LOC figures in this section are estimated *Go* lines; figures in §2 are measured
+*C++* lines from Tesseract.
 
 ### L0 — image core (~3k LOC)
 
@@ -294,6 +297,11 @@ output bitmaps for each morphology op, and connected-component sets matching
 `pixConnComp` exactly.
 
 ### L1 — recognizer runtime + Tesseract loader (~8k LOC)
+
+L1 has two separable halves: the **tensor runtime** (loader-agnostic, and the
+foundation L3 and L5 both build on) and the **`.traineddata` loader**. Only the
+loader is Tesseract-specific. If the loader proves intractable, the runtime is
+unaffected and L5's ONNX loader substitutes for it.
 
 `.traineddata` container parsing (`TessdataManager` format), then the entries the
 LSTM path needs:
@@ -379,9 +387,13 @@ Kleio may `go:embed` a language model or bake it into its image.
 **A weights blob is data, not a binary dependency.** G1's constraint is no
 executables and no shared libraries; a model file is neither.
 
-Fine-tuned models serialize through `Model.WriteTo` in Cadmus's own format
-(the base model plus a weight delta and provenance metadata), so a fine-tune is
-reproducible and attributable to the corrections that produced it.
+Fine-tuned models serialize through `Model.WriteTo` as a **self-contained** file
+in Cadmus's own format: the full weight set with fine-tuning applied, plus
+provenance metadata (base model identity, corpus fingerprint, iteration count,
+held-out CER/WER). Self-contained rather than a delta, so loading a fine-tuned
+model never requires resolving a base model — Kleio stores and serves one file per
+version. Provenance makes each fine-tune reproducible and attributable to the
+corrections that produced it.
 
 ---
 
@@ -449,7 +461,7 @@ individually before adoption; L5 ships no weights by default.
 
 | risk | severity | mitigation |
 |---|---|---|
-| `.traineddata` network deserialization is idiosyncratic and under-documented | high — blocks L1 | It is mechanical, and `--psm 7` gives an exact oracle. First task is a spike: parse `eng.traineddata` and dump the network graph structure. If that fights back, the L5 path (ONNX weights) becomes primary and L1 is deferred. |
+| `.traineddata` network deserialization is idiosyncratic and under-documented | high — blocks L1's loader half | It is mechanical, and `--psm 7` gives an exact oracle. First task is a spike: parse `eng.traineddata` and dump the network graph structure. If it fights back, only the loader is lost — the tensor runtime is unaffected, and L5's ONNX loader is promoted ahead of L2 to supply weights instead. |
 | L4 is a 20-25k LOC port | high — but late | Per-stage differential testing; L4 is optional to the project's value. L2 remains the fast path regardless. |
 | Pure-Go CPU inference is slow | medium | Kleio's OCR is queue-driven batch work behind KEDA scaling; throughput scales horizontally. Optimization path exists: int8 quantized weights, then `src/arch`-equivalent SIMD via Go assembly. |
 | Fine-tuning on user corrections degrades the model (overfitting, bad corrections) | medium | Held-out eval split, CER gate before a model version is promoted, and model versions are immutable and revertible. |
