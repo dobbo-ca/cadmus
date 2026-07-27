@@ -32,6 +32,15 @@ int main(int argc, char **argv) {
     snprintf(path, sizeof path, "%s/otsu.bin", argv[2]);
     dump(path, otsu);
 
-    pixDestroy(&src); pixDestroy(&gray); pixDestroy(&otsu);
+    // Sauvola over a 17x17 window (whsize 8), addborder=1 so Leptonica mirrors
+    // the border itself. k is 11/32, which is exact in both float32 (the type
+    // of Leptonica's factor) and float64 (the type of the Go k), so the two
+    // implementations cannot disagree about the constant.
+    PIX *sauvola = NULL;
+    pixSauvolaBinarize(gray, 8, 0.34375f, 1, NULL, NULL, NULL, &sauvola);
+    snprintf(path, sizeof path, "%s/sauvola.bin", argv[2]);
+    dump(path, sauvola);
+
+    pixDestroy(&src); pixDestroy(&gray); pixDestroy(&otsu); pixDestroy(&sauvola);
     return 0;
 }
