@@ -77,6 +77,34 @@ static PIX *makeConnCompDiag(void) {
     return p;
 }
 
+// makeSeedfillSeed builds a sparse seed for a w x h mask: one pixel every 37
+// columns and 29 rows. Most of them land on background and must be dropped;
+// the rest each select the whole mask component they land in. One golden
+// therefore pins both halves of the rule.
+static PIX *makeSeedfillSeed(l_int32 w, l_int32 h) {
+    PIX *p = pixCreate(w, h, 1);
+    if (!p) { fprintf(stderr, "pixCreate failed\n"); exit(1); }
+    for (l_int32 y = 0; y < h; y += 29)
+        for (l_int32 x = 0; x < w; x += 37) pixSetPixel(p, x, y, 1);
+    return p;
+}
+
+// makeSeedfillDiagSeed seeds the diagonal operand from makeConnCompDiag: the
+// head of the staircase, one pixel inside the first of the two blocks that
+// touch only at a corner, and one pixel on background. Under 8-connectivity
+// the first seed fills the whole staircase and the second fills both blocks;
+// under 4-connectivity they fill only their own pixel and the one block. The
+// background seed must vanish under both. The scan image has no diagonal
+// contacts, so this is the operand that separates the two connectivities.
+static PIX *makeSeedfillDiagSeed(void) {
+    PIX *p = pixCreate(40, 40, 1);
+    if (!p) { fprintf(stderr, "pixCreate failed\n"); exit(1); }
+    pixSetPixel(p, 2, 2, 1);
+    pixSetPixel(p, 22, 22, 1);
+    pixSetPixel(p, 10, 30, 1);
+    return p;
+}
+
 int main(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "usage: gen <input.png> <outdir>\n"); return 2; }
     PIX *src = pixRead(argv[1]);
@@ -163,8 +191,45 @@ int main(int argc, char **argv) {
     dumpConnComp(argv[2], "conncomp_diag8.bin", diag, 8);
     dumpOwned(argv[2], "conncomp_diag_in.bin", diag);
 
-    boxDestroy(&crop);
+    // Binary seedfill over a 320x400 crop of the Otsu image, so the mask
+    // carries real text components — several of them cut by the crop edge —
+    // without the golden costing a full page. The seed is dumped as well as
+    // the mask, so the Go test never re-derives either.
+    BOX *sfBox = boxCreate(300, 150, 320, 400);
+    PIX *sfMask = pixClipRectangle(otsu, sfBox, NULL);
+    PIX *sfSeed = makeSeedfillSeed(320, 400);
+    snprintf(path, sizeof path, "%s/seedfill_mask_in.bin", argv[2]);
+    dump(path, sfMask);
+    snprintf(path, sizeof path, "%s/seedfill_seed_in.bin", argv[2]);
+    dump(path, sfSeed);
+    dumpOwned(argv[2], "seedfill4.bin", pixSeedfillBinary(NULL, sfSeed, sfMask, 4));
+    dumpOwned(argv[2], "seedfill8.bin", pixSeedfillBinary(NULL, sfSeed, sfMask, 8));
+
+    // The diagonal operand again, this time as a filling mask. Its component
+    // set differs between the connectivities, so these two goldens differ where
+    // the crop's pair above come out identical.
+    PIX *diagMask = makeConnCompDiag();
+    PIX *diagSeed = makeSeedfillDiagSeed();
+    snprintf(path, sizeof path, "%s/seedfill_diag_seed_in.bin", argv[2]);
+    dump(path, diagSeed);
+    dumpOwned(argv[2], "seedfill_diag4.bin", pixSeedfillBinary(NULL, diagSeed, diagMask, 4));
+    dumpOwned(argv[2], "seedfill_diag8.bin", pixSeedfillBinary(NULL, diagSeed, diagMask, 8));
+
+    // Distance function over a different 320x400 crop, 4-connected (city
+    // block), 8bpp out, with L_BOUNDARY_BG so everything outside the image
+    // counts as background and a foreground pixel on the border is at
+    // distance 1.
+    BOX *distBox = boxCreate(100, 200, 320, 400);
+    PIX *distIn = pixClipRectangle(otsu, distBox, NULL);
+    snprintf(path, sizeof path, "%s/dist_in.bin", argv[2]);
+    dump(path, distIn);
+    dumpOwned(argv[2], "dist4.bin",
+              pixDistanceFunction(distIn, 4, 8, L_BOUNDARY_BG));
+
+    boxDestroy(&crop); boxDestroy(&sfBox); boxDestroy(&distBox);
     pixDestroy(&ropDst); pixDestroy(&ropSrc);
+    pixDestroy(&sfMask); pixDestroy(&sfSeed);
+    pixDestroy(&diagMask); pixDestroy(&diagSeed); pixDestroy(&distIn);
     pixDestroy(&src); pixDestroy(&gray); pixDestroy(&otsu); pixDestroy(&sauvola);
     return 0;
 }
