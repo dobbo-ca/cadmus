@@ -1,0 +1,25 @@
+name: ci
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.26'
+      - run: go build ./...
+      - run: go vet ./...
+      - run: go test ./...
+      - name: assert zero dependencies
+        run: |
+          if [ -s go.sum ]; then
+            echo "go.sum is non-empty; a dependency was added"
+            exit 1
+          fi
