@@ -24,6 +24,59 @@ static void dumpOwned(const char *outdir, const char *name, PIX *p) {
     pixDestroy(&p);
 }
 
+// dumpConnComp writes a connected-component golden. Unlike the PIX goldens this
+// is a table, not an image: int32 LE component count, then one record of five
+// int32 LE per component (x, y, w, h, foreground pixel count), in the order
+// pixConnComp emits them, which is raster order of each component's first
+// foreground pixel.
+static void dumpConnComp(const char *outdir, const char *name, PIX *p, l_int32 conn) {
+    PIXA *pixa = NULL;
+    BOXA *boxa = pixConnComp(p, &pixa, conn);
+    if (!boxa) { fprintf(stderr, "pixConnComp(conn=%d) failed\n", conn); exit(1); }
+    NUMA *counts = pixaCountPixels(pixa);
+    if (!counts) { fprintf(stderr, "pixaCountPixels(conn=%d) failed\n", conn); exit(1); }
+
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s", outdir, name);
+    FILE *f = fopen(path, "wb");
+    if (!f) { perror(path); exit(1); }
+    int32_t n = boxaGetCount(boxa);
+    fwrite(&n, sizeof n, 1, f);
+    for (int32_t i = 0; i < n; i++) {
+        l_int32 x, y, w, h, c;
+        boxaGetBoxGeometry(boxa, i, &x, &y, &w, &h);
+        numaGetIValue(counts, i, &c);
+        int32_t rec[5] = { x, y, w, h, c };
+        fwrite(rec, sizeof(int32_t), 5, f);
+    }
+    fclose(f);
+    printf("wrote %s (%d components, conn=%d)\n", path, n, conn);
+
+    numaDestroy(&counts);
+    pixaDestroy(&pixa);
+    boxaDestroy(&boxa);
+}
+
+// makeConnCompDiag builds a small operand whose component set differs between
+// 4- and 8-connectivity: a diagonal staircase, two blocks touching only at a
+// corner, a lone pixel, and a run along the top border. The scan image has no
+// diagonal contacts anywhere, so its two connectivity goldens come out
+// byte-identical and cannot catch an implementation that ignores the
+// parameter. This one also pins the pathological cases the oracle should cover:
+// a single-pixel component, and a component running to the image edge.
+static PIX *makeConnCompDiag(void) {
+    PIX *p = pixCreate(40, 40, 1);
+    if (!p) { fprintf(stderr, "pixCreate failed\n"); exit(1); }
+    for (int x = 0; x < 4; x++) pixSetPixel(p, x, 0, 1);
+    pixSetPixel(p, 38, 1, 1);
+    for (int i = 0; i < 16; i++) pixSetPixel(p, 2 + i, 2 + i, 1);
+    for (int y = 20; y < 25; y++)
+        for (int x = 20; x < 25; x++) pixSetPixel(p, x, y, 1);
+    for (int y = 25; y < 30; y++)
+        for (int x = 25; x < 30; x++) pixSetPixel(p, x, y, 1);
+    return p;
+}
+
 int main(int argc, char **argv) {
     if (argc != 3) { fprintf(stderr, "usage: gen <input.png> <outdir>\n"); return 2; }
     PIX *src = pixRead(argv[1]);
@@ -97,6 +150,18 @@ int main(int argc, char **argv) {
     dumpOwned(argv[2], "erode_3x7.bin", pixErodeBrick(NULL, otsu, 3, 7));
     dumpOwned(argv[2], "open_5x5.bin", pixOpenBrick(NULL, otsu, 5, 5));
     dumpOwned(argv[2], "close_7x3.bin", pixCloseBrick(NULL, otsu, 7, 3));
+
+    // Connected components over the whole Otsu image, both connectivities. The
+    // input carries isolated 1-2px specks and a full-height vertical rule, so
+    // the goldens cover single-pixel components and components running to the
+    // image border as well as the ordinary text-line blobs.
+    dumpConnComp(argv[2], "conncomp4.bin", otsu, 4);
+    dumpConnComp(argv[2], "conncomp8.bin", otsu, 8);
+
+    PIX *diag = makeConnCompDiag();
+    dumpConnComp(argv[2], "conncomp_diag4.bin", diag, 4);
+    dumpConnComp(argv[2], "conncomp_diag8.bin", diag, 8);
+    dumpOwned(argv[2], "conncomp_diag_in.bin", diag);
 
     boxDestroy(&crop);
     pixDestroy(&ropDst); pixDestroy(&ropSrc);
