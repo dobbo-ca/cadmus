@@ -1,5 +1,6 @@
 // Regenerates Leptonica goldens. Manual step; see ../../../Makefile `goldens`.
 // Each golden is a raw dump: width, height, depth as int32 LE, then packed rows.
+#include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <leptonica/allheaders.h>
@@ -55,6 +56,22 @@ static void dumpConnComp(const char *outdir, const char *name, PIX *p, l_int32 c
     numaDestroy(&counts);
     pixaDestroy(&pixa);
     boxaDestroy(&boxa);
+}
+
+// dumpFloats writes a scalar golden: int32 LE value count, then that many
+// float32 LE. Used for the measurements that are numbers rather than images.
+static void dumpFloats(const char *outdir, const char *name,
+                       const l_float32 *v, int32_t n) {
+    char path[512];
+    snprintf(path, sizeof path, "%s/%s", outdir, name);
+    FILE *f = fopen(path, "wb");
+    if (!f) { perror(path); exit(1); }
+    fwrite(&n, sizeof n, 1, f);
+    fwrite(v, sizeof(l_float32), (size_t)n, f);
+    fclose(f);
+    printf("wrote %s (%d floats:", path, n);
+    for (int32_t i = 0; i < n; i++) printf(" %g", (double)v[i]);
+    printf(")\n");
 }
 
 // makeConnCompDiag builds a small operand whose component set differs between
@@ -225,6 +242,40 @@ int main(int argc, char **argv) {
     dump(path, distIn);
     dumpOwned(argv[2], "dist4.bin",
               pixDistanceFunction(distIn, 4, 8, L_BOUNDARY_BG));
+
+    // Deskew. The operand is the whole Otsu image rotated clockwise by 2.5
+    // degrees about its centre — Leptonica measures angles in radians with
+    // clockwise positive, and pixRotate rotates about (w/2, h/2).
+    //
+    // pixRotate itself is not the oracle here. For 1 bpp at angles below about
+    // 6 degrees it overrides whatever rotation type is asked for and uses
+    // L_ROTATE_SHEAR, a three-shear approximation chosen for speed. Cadmus's
+    // Rotate is a true nearest-neighbour rotation, so the oracle is the
+    // sampling rotation pixRotate dispatches to above that threshold, called
+    // with pixRotate's own centre.
+    l_float32 rotAngle = (l_float32)(2.5 * M_PI / 180.0);
+    PIX *rot = pixRotateBySampling(otsu, pixGetWidth(otsu) / 2,
+                                   pixGetHeight(otsu) / 2, rotAngle,
+                                   L_BRING_IN_WHITE);
+    snprintf(path, sizeof path, "%s/deskew_rot.bin", argv[2]);
+    dump(path, rot);
+
+    // pixFindSkew reports the angle in degrees required to *deskew* the image,
+    // which is the negative of the skew the image carries. Both that and the
+    // exact float32 rotation angle above go into a scalar golden, so the Go
+    // test rotates by the same constant Leptonica did and compares against the
+    // same measurement rather than re-deriving either.
+    l_float32 skewDeg = 0.0f, skewConf = 0.0f;
+    l_float32 straightDeg = 0.0f, straightConf = 0.0f;
+    if (pixFindSkew(rot, &skewDeg, &skewConf)) {
+        fprintf(stderr, "pixFindSkew(rotated) failed\n"); exit(1);
+    }
+    if (pixFindSkew(otsu, &straightDeg, &straightConf)) {
+        fprintf(stderr, "pixFindSkew(straight) failed\n"); exit(1);
+    }
+    l_float32 meta[5] = { rotAngle, skewDeg, skewConf, straightDeg, straightConf };
+    dumpFloats(argv[2], "deskew_meta.bin", meta, 5);
+    pixDestroy(&rot);
 
     boxDestroy(&crop); boxDestroy(&sfBox); boxDestroy(&distBox);
     pixDestroy(&ropDst); pixDestroy(&ropSrc);
