@@ -72,7 +72,37 @@ func (r *Reader) Int32() (int32, error) {
 	return int32(v), err
 }
 
-func (r *Reader) Int64() (int64, error) {
+// Int16 reads a 2-byte signed integer. Only the DAWG header uses one
+// (kDawgMagicNumber, src/dict/dawg.cpp).
+func (r *Reader) Int16() (int16, error) {
+	b, err := r.Bytes(2)
+	if err != nil {
+		return 0, err
+	}
+	v := binary.LittleEndian.Uint16(b)
+	if r.swap {
+		v = v>>8 | v<<8
+	}
+	return int16(v), nil
+}
+
+// Float32 reads a 4-byte IEEE-754 value. Tesseract writes `float` rather than
+// `TFloat` for the recognizer's adam_beta_, learning_rate_ and momentum_
+// (src/lstm/lstmrecognizer.h) and for Plumbing::learning_rates_.
+func (r *Reader) Float32() (float32, error) {
+	b, err := r.Bytes(4)
+	if err != nil {
+		return 0, err
+	}
+	v := binary.LittleEndian.Uint32(b)
+	if r.swap {
+		v = bits32Reverse(v)
+	}
+	return math.Float32frombits(v), nil
+}
+
+// Uint64 reads an 8-byte unsigned integer. DAWG edge records are uint64.
+func (r *Reader) Uint64() (uint64, error) {
 	b, err := r.Bytes(8)
 	if err != nil {
 		return 0, err
@@ -81,7 +111,12 @@ func (r *Reader) Int64() (int64, error) {
 	if r.swap {
 		v = bits64Reverse(v)
 	}
-	return int64(v), nil
+	return v, nil
+}
+
+func (r *Reader) Int64() (int64, error) {
+	v, err := r.Uint64()
+	return int64(v), err
 }
 
 func (r *Reader) Float64() (float64, error) {

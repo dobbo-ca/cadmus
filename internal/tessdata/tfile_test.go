@@ -59,3 +59,69 @@ func TestReaderTruncatedInputErrors(t *testing.T) {
 		t.Fatal("Uint32() on 2-byte input: want error, got nil")
 	}
 }
+
+func TestReaderInt16(t *testing.T) {
+	// kDawgMagicNumber == 42, written as int16.
+	r := NewReader([]byte{0x2a, 0x00, 0xff, 0xff})
+	if got, err := r.Int16(); err != nil || got != 42 {
+		t.Fatalf("Int16() = %d, %v; want 42, nil", got, err)
+	}
+	if got, err := r.Int16(); err != nil || got != -1 {
+		t.Fatalf("Int16() = %d, %v; want -1, nil", got, err)
+	}
+	if r.Remaining() != 0 {
+		t.Fatalf("Remaining() = %d; want 0", r.Remaining())
+	}
+}
+
+func TestReaderInt16Swapped(t *testing.T) {
+	r := NewReader([]byte{0x00, 0x2a})
+	r.SetSwap(true)
+	if got, err := r.Int16(); err != nil || got != 42 {
+		t.Fatalf("Int16() with swap = %d, %v; want 42, nil", got, err)
+	}
+}
+
+func TestReaderInt16Truncated(t *testing.T) {
+	r := NewReader([]byte{0x2a})
+	if _, err := r.Int16(); err == nil {
+		t.Fatal("Int16() on 1-byte input: want error, got nil")
+	}
+}
+
+func TestReaderUint64(t *testing.T) {
+	// A DAWG edge record: letter=9, eow set (bit 9), next_node=1222,
+	// with flag_start_bit=7 => raw 0x0000000000131a09.
+	r := NewReader([]byte{0x09, 0x1a, 0x13, 0x00, 0x00, 0x00, 0x00, 0x00})
+	got, err := r.Uint64()
+	if err != nil || got != 0x131a09 {
+		t.Fatalf("Uint64() = %#x, %v; want 0x131a09, nil", got, err)
+	}
+}
+
+func TestReaderUint64Swapped(t *testing.T) {
+	r := NewReader([]byte{0x00, 0x00, 0x00, 0x00, 0x00, 0x13, 0x1a, 0x09})
+	r.SetSwap(true)
+	got, err := r.Uint64()
+	if err != nil || got != 0x131a09 {
+		t.Fatalf("Uint64() with swap = %#x, %v; want 0x131a09, nil", got, err)
+	}
+}
+
+func TestReaderFloat32(t *testing.T) {
+	// learning_rate_ in eng.traineddata is float32 0.001 == 0x3a83126f.
+	r := NewReader([]byte{0x6f, 0x12, 0x83, 0x3a})
+	got, err := r.Float32()
+	if err != nil || got != float32(0.001) {
+		t.Fatalf("Float32() = %v, %v; want 0.001, nil", got, err)
+	}
+}
+
+func TestReaderFloat32Swapped(t *testing.T) {
+	r := NewReader([]byte{0x3a, 0x83, 0x12, 0x6f})
+	r.SetSwap(true)
+	got, err := r.Float32()
+	if err != nil || got != float32(0.001) {
+		t.Fatalf("Float32() with swap = %v, %v; want 0.001, nil", got, err)
+	}
+}
