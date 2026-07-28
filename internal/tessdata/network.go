@@ -45,8 +45,22 @@ package tessdata
 //	                             are rejected in parseLayer on the TS_ENABLED
 //	                             training-state byte)
 //
-// LSTMRecognizer::DeSerialize (src/lstm/lstmrecognizer.cpp) wraps the root
-// layer; see parseRecognizerTrailer for the fields that follow it.
+// LSTMRecognizer::DeSerialize (src/lstm/lstmrecognizer.cpp:133) wraps the root
+// layer: the lstm component is a serialized LSTMRecognizer, not a bare Network,
+// and eight more fields follow the graph. With include_charsets == false — the
+// case for every model that ships lstm-unicharset and lstm-recoder as separate
+// container components — the trailer is exactly:
+//
+//	string  network_str_        ; the build spec, e.g. "[1,36,0,1Ct3,...O1c1]"
+//	int32   training_flags_     ; TF_INT_MODE=1, TF_COMPRESS_UNICHARSET=64
+//	int32   training_iteration_
+//	int32   sample_iteration_
+//	int32   null_char_
+//	f32     adam_beta_          ; 4 bytes, not 8
+//	f32     learning_rate_
+//	f32     momentum_
+//
+// See ParseRecognizer, which reads and retains all eight.
 
 import (
 	"fmt"
@@ -213,15 +227,52 @@ type Layer struct {
 	NA           int         // LSTM family:       na_
 }
 
-// ParseNetwork deserializes the graph in a .traineddata LSTM component. swap
-// comes from Container.Swapped.
+// TrainingFlags bits, from src/lstm/lstmrecognizer.h:44.
+const (
+	tfIntMode            int32 = 1
+	tfCompressUnicharset int32 = 64
+)
+
+// Recognizer is a parsed lstm component: the network graph plus the
+// LSTMRecognizer fields serialized after it.
+type Recognizer struct {
+	Network *Layer
+
+	// NetworkStr is the spec string the model was built from, e.g.
+	// "[1,36,0,1Ct3,3,16Mp3,3Lfys64Lfx96Lrx96Lfx512O1c1]". Its output count is
+	// a PLACEHOLDER: NetworkBuilder::ParseOutput overrides the number after
+	// O1c with the recoder's code range, which is why released models persist
+	// "O1c1". Never derive the output count from this string.
+	NetworkStr        string
+	TrainingFlags     int32
+	TrainingIteration int32
+
+	// SampleIteration seeds LSTMRecognizer::SetRandomSeed, which drives the
+	// random edge padding Convolve applies at image borders. L1b needs it.
+	SampleIteration int32
+
+	// NullChar is the network output index of the CTC blank. It is the
+	// authority: UnicharCompress::DefragmentCodeValues relocates the null code
+	// to the top of the range, so it is code_range-1 in practice, but the
+	// format does not require that and this field does.
+	NullChar int32
+
+	AdamBeta     float32
+	LearningRate float32
+	Momentum     float32
+}
+
+// IsIntMode reports whether the model carries int8-quantized weights.
+func (rec *Recognizer) IsIntMode() bool { return rec.TrainingFlags&tfIntMode != 0 }
+
+// ParseRecognizer deserializes a .traineddata lstm component. swap comes from
+// Container.Swapped.
 //
 // The component holds an LSTMRecognizer, not a bare network: the root layer is
-// followed by the recognizer's own fields. Those are consumed and discarded so
-// that the buffer can be required to end exactly where the format says it
-// should — a parser that desynchronises mid-graph produces a plausible-looking
-// tree and a non-empty tail, and that tail is what catches it.
-func ParseNetwork(data []byte, swap bool) (*Layer, error) {
+// followed by the recognizer's own fields. Requiring the buffer to end exactly
+// where the format says it should is what catches a parser that desynchronised
+// mid-graph and returned a plausible-looking tree.
+func ParseRecognizer(data []byte, swap bool) (*Recognizer, error) {
 	r := NewReader(data)
 	r.SetSwap(swap)
 
@@ -229,38 +280,51 @@ func ParseNetwork(data []byte, swap bool) (*Layer, error) {
 	if err != nil {
 		return nil, err
 	}
-	if r.Remaining() > 0 {
-		if err := parseRecognizerTrailer(r); err != nil {
-			return nil, fmt.Errorf("tessdata: %d bytes follow the network graph and are not a recognizer trailer (the graph parse desynchronised): %w", r.Remaining(), err)
-		}
+	rec := &Recognizer{Network: root}
+	if rec.NetworkStr, err = r.String(); err != nil {
+		return nil, fmt.Errorf("tessdata: reading network spec string (the graph parse may have desynchronised): %w", err)
 	}
-	if r.Remaining() != 0 {
-		return nil, fmt.Errorf("tessdata: %d bytes left unconsumed after the network graph; the parse desynchronised", r.Remaining())
-	}
-	return root, nil
-}
-
-// parseRecognizerTrailer consumes the LSTMRecognizer fields that follow the
-// root layer. Models that ship lstm-unicharset and lstm-recoder as separate
-// container components — every model in tessdata, tessdata_best and
-// tessdata_fast — write only these eight fields here.
-func parseRecognizerTrailer(r *Reader) error {
-	if _, err := r.String(); err != nil { // network_str_, the build spec string
-		return fmt.Errorf("reading network spec string: %w", err)
-	}
-	for _, field := range []string{"training_flags", "training_iteration", "sample_iteration", "null_char"} {
-		if _, err := r.Int32(); err != nil {
-			return fmt.Errorf("reading %s: %w", field, err)
+	for _, f := range []struct {
+		name string
+		dst  *int32
+	}{
+		{"training_flags", &rec.TrainingFlags},
+		{"training_iteration", &rec.TrainingIteration},
+		{"sample_iteration", &rec.SampleIteration},
+		{"null_char", &rec.NullChar},
+	} {
+		if *f.dst, err = r.Int32(); err != nil {
+			return nil, fmt.Errorf("tessdata: reading %s: %w", f.name, err)
 		}
 	}
 	// adam_beta_, learning_rate_ and momentum_ are declared `float` in
-	// src/lstm/lstmrecognizer.h — 4 bytes each, not 8.
-	for _, field := range []string{"adam_beta", "learning_rate", "momentum"} {
-		if _, err := r.Bytes(4); err != nil {
-			return fmt.Errorf("reading %s: %w", field, err)
+	// src/lstm/lstmrecognizer.h:350 — 4 bytes each, not 8.
+	for _, f := range []struct {
+		name string
+		dst  *float32
+	}{
+		{"adam_beta", &rec.AdamBeta},
+		{"learning_rate", &rec.LearningRate},
+		{"momentum", &rec.Momentum},
+	} {
+		if *f.dst, err = r.Float32(); err != nil {
+			return nil, fmt.Errorf("tessdata: reading %s: %w", f.name, err)
 		}
 	}
-	return nil
+	if r.Remaining() != 0 {
+		return nil, fmt.Errorf("tessdata: %d bytes left unconsumed after the lstm component; the parse desynchronised", r.Remaining())
+	}
+
+	if rec.IsIntMode() {
+		return nil, fmt.Errorf("tessdata: training_flags %d has TF_INT_MODE set: this is an int8-quantized model. Cadmus L1 implements the float weight path only; run ./testdata/fetch.sh to get the tessdata_best model", rec.TrainingFlags)
+	}
+	if rec.TrainingFlags&tfCompressUnicharset == 0 {
+		return nil, fmt.Errorf("tessdata: training_flags %d has TF_COMPRESS_UNICHARSET clear: the model has no recoder and LSTMRecognizer::LoadRecoder would synthesise a pass-through one. Cadmus requires a recoding model", rec.TrainingFlags)
+	}
+	if rec.NullChar < 0 || int(rec.NullChar) >= root.NumOutputs {
+		return nil, fmt.Errorf("tessdata: null_char %d is outside the network's %d outputs", rec.NullChar, root.NumOutputs)
+	}
+	return rec, nil
 }
 
 // parseLayer reads the common Network header and dispatches on layer type.

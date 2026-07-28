@@ -31,12 +31,15 @@ func dump(path string, w io.Writer) error {
 		fmt.Fprintln(w, "\nno lstm component (legacy-only model)")
 		return nil
 	}
-	root, err := tessdata.ParseNetwork(lstm, c.Swapped())
+	rec, err := tessdata.ParseRecognizer(lstm, c.Swapped())
 	if err != nil {
-		return fmt.Errorf("parsing network graph: %w", err)
+		return fmt.Errorf("parsing lstm component: %w", err)
 	}
+	fmt.Fprintf(w, "\nrecognizer:\n  spec           %s\n  training_flags %d\n  iteration      %d\n  sample_iter    %d\n  null_char      %d\n  adam_beta      %g\n  learning_rate  %g\n  momentum       %g\n",
+		rec.NetworkStr, rec.TrainingFlags, rec.TrainingIteration,
+		rec.SampleIteration, rec.NullChar, rec.AdamBeta, rec.LearningRate, rec.Momentum)
 	fmt.Fprintln(w, "\nnetwork:")
-	root.Tree(w)
+	rec.Network.Tree(w)
 	return nil
 }
 

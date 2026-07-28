@@ -9,9 +9,9 @@ import (
 	"testing"
 )
 
-// loadRealNetwork parses the LSTM component of the fetched fixture, skipping
-// the test when the fixture has not been fetched.
-func loadRealNetwork(t *testing.T) *Layer {
+// loadRealRecognizer parses the LSTM component of the fetched fixture,
+// skipping the test when the fixture has not been fetched.
+func loadRealRecognizer(t *testing.T) *Recognizer {
 	t.Helper()
 	path := filepath.Join("..", "..", "testdata", "eng.traineddata")
 	raw, err := os.ReadFile(path)
@@ -26,12 +26,14 @@ func loadRealNetwork(t *testing.T) *Layer {
 	if !ok {
 		t.Fatal("eng.traineddata has no lstm component")
 	}
-	root, err := ParseNetwork(lstm, c.Swapped())
+	rec, err := ParseRecognizer(lstm, c.Swapped())
 	if err != nil {
-		t.Fatalf("ParseNetwork() error = %v", err)
+		t.Fatalf("ParseRecognizer() error = %v", err)
 	}
-	return root
+	return rec
 }
+
+func loadRealNetwork(t *testing.T) *Layer { return loadRealRecognizer(t).Network }
 
 // The whole point of the spike: parse the real model's graph.
 func TestParseNetworkRealModel(t *testing.T) {
@@ -81,8 +83,8 @@ func TestParseNetworkRejectsAbsurdStackSize(t *testing.T) {
 	b = append(b, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0) // ni, no, num_weights
 	b = append(b, 0, 0, 0, 0)                         // empty name
 	b = append(b, 0x9f, 0x86, 0x01, 0x00)             // stack size 99999
-	if _, err := ParseNetwork(b, false); err == nil {
-		t.Fatal("ParseNetwork() with 99999-child stack: want error, got nil")
+	if _, err := ParseRecognizer(b, false); err == nil {
+		t.Fatal("ParseRecognizer() with 99999-child stack: want error, got nil")
 	}
 }
 
@@ -308,5 +310,109 @@ func assertClose(t *testing.T, what string, got, want float64) {
 	t.Helper()
 	if math.Abs(got-want) > 5e-6 {
 		t.Errorf("%s = %.6f; want %.6f", what, got, want)
+	}
+}
+
+// Exact trailer values, read out of tessdata_best 4.1.0 eng.traineddata during
+// planning and independently confirmed by `combine_tessdata -l`.
+func TestParseRecognizerRealModelTrailer(t *testing.T) {
+	rec := loadRealRecognizer(t)
+
+	const wantSpec = "[1,36,0,1Ct3,3,16Mp3,3Lfys64Lfx96Lrx96Lfx512O1c1]"
+	if rec.NetworkStr != wantSpec {
+		t.Errorf("NetworkStr = %q; want %q", rec.NetworkStr, wantSpec)
+	}
+	if rec.TrainingFlags != 64 {
+		t.Errorf("TrainingFlags = %d; want 64 (TF_COMPRESS_UNICHARSET, TF_INT_MODE clear)", rec.TrainingFlags)
+	}
+	if rec.TrainingIteration != 814100 {
+		t.Errorf("TrainingIteration = %d; want 814100", rec.TrainingIteration)
+	}
+	if rec.SampleIteration != 814136 {
+		t.Errorf("SampleIteration = %d; want 814136", rec.SampleIteration)
+	}
+	if rec.NullChar != 110 {
+		t.Errorf("NullChar = %d; want 110", rec.NullChar)
+	}
+	if rec.AdamBeta != 0.999 {
+		t.Errorf("AdamBeta = %v; want 0.999", rec.AdamBeta)
+	}
+	if rec.LearningRate != 0.001 {
+		t.Errorf("LearningRate = %v; want 0.001", rec.LearningRate)
+	}
+	if rec.Momentum != 0.5 {
+		t.Errorf("Momentum = %v; want 0.5", rec.Momentum)
+	}
+	// The spec string is a placeholder for the output count: ParseOutput in
+	// src/training/common/networkbuilder.cpp overrides whatever number appears
+	// after O1c with the recoder's code range, which is why the persisted
+	// string reads O1c1. Never derive the output count from it.
+	if rec.Network.NumOutputs != 111 {
+		t.Errorf("Network.NumOutputs = %d; want 111", rec.Network.NumOutputs)
+	}
+}
+
+// buildTrailer emits the eight LSTMRecognizer fields that follow the root layer.
+func buildTrailer(spec string, flags, trainIter, sampleIter, nullChar int32) []byte {
+	b := binary.LittleEndian.AppendUint32(nil, uint32(len(spec)))
+	b = append(b, spec...)
+	for _, v := range []int32{flags, trainIter, sampleIter, nullChar} {
+		b = binary.LittleEndian.AppendUint32(b, uint32(v))
+	}
+	for _, v := range []float32{0.999, 0.001, 0.5} {
+		b = binary.LittleEndian.AppendUint32(b, math.Float32bits(v))
+	}
+	return b
+}
+
+// A minimal single-layer "network" plus a trailer, for the flag assertions.
+//
+// null_char MUST be < the layer's no (2 here), or ParseRecognizer's range check
+// rejects the fixture and TestParseRecognizerAcceptsTiny can never pass. The
+// real model's 110 belongs to a 111-output network, not to this one.
+func buildTinyRecognizer(flags int32) []byte {
+	data := buildLayerHeader(LayerTanh, 2, 0, 2, 2, 6, "T")
+	data = append(data, buildFloatMatrix(132, 2, 3, []float64{1, 2, 3, 4, 5, 6})...)
+	return append(data, buildTrailer("[tiny]", flags, 1, 2, 1)...)
+}
+
+func TestParseRecognizerRejectsIntMode(t *testing.T) {
+	// training_flags 65 == TF_COMPRESS_UNICHARSET|TF_INT_MODE: Homebrew's
+	// tessdata build of eng.
+	_, err := ParseRecognizer(buildTinyRecognizer(65), false)
+	if err == nil {
+		t.Fatal("ParseRecognizer() with TF_INT_MODE: want error, got nil")
+	}
+	// Match the flag NAME. "int" alone is satisfied by "point", "printing" or
+	// any int-typed field name, so it cannot distinguish this cause from an
+	// unrelated failure.
+	if !strings.Contains(err.Error(), "TF_INT_MODE") {
+		t.Errorf("error %q does not name int mode as the cause", err)
+	}
+}
+
+func TestParseRecognizerRejectsNonRecodingModel(t *testing.T) {
+	// TF_COMPRESS_UNICHARSET clear means LoadRecoder builds a pass-through
+	// recoder from the unicharset instead of reading the lstm-recoder
+	// component. No stock model does this and cadmus does not implement it.
+	if _, err := ParseRecognizer(buildTinyRecognizer(0), false); err == nil {
+		t.Fatal("ParseRecognizer() with TF_COMPRESS_UNICHARSET clear: want error, got nil")
+	}
+}
+
+func TestParseRecognizerRejectsTrailingBytes(t *testing.T) {
+	data := append(buildTinyRecognizer(64), 0xde, 0xad)
+	if _, err := ParseRecognizer(data, false); err == nil {
+		t.Fatal("ParseRecognizer() with 2 trailing bytes: want error, got nil")
+	}
+}
+
+func TestParseRecognizerAcceptsTiny(t *testing.T) {
+	rec, err := ParseRecognizer(buildTinyRecognizer(64), false)
+	if err != nil {
+		t.Fatalf("ParseRecognizer() error = %v", err)
+	}
+	if rec.NetworkStr != "[tiny]" || rec.NullChar != 1 {
+		t.Fatalf("trailer = %q, null %d; want \"[tiny]\", 1", rec.NetworkStr, rec.NullChar)
 	}
 }
