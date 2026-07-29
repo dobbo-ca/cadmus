@@ -11,6 +11,7 @@ import (
 	"image"
 	"strings"
 
+	"github.com/dobbo-ca/cadmus/internal/dict"
 	"github.com/dobbo-ca/cadmus/internal/nn"
 	"github.com/dobbo-ca/cadmus/internal/tessdata"
 )
@@ -20,6 +21,9 @@ type Recognizer struct {
 	Net     *Network
 	Charset *tessdata.Unicharset
 	Recoder *tessdata.Recoder
+	// Dict is the lexicon. Nil disables the dictionary beams; Recognize still
+	// works, at greedy-equivalent accuracy.
+	Dict *dict.Dict
 }
 
 // NewRecognizer loads a .traineddata file.
@@ -80,7 +84,37 @@ func NewRecognizer(model []byte) (*Recognizer, error) {
 	if space := rc.Encode(tessdata.UnicharSpace); len(space) != 1 || space[0] != tessdata.UnicharSpace {
 		return nil, fmt.Errorf("recog: space was garbled in recoding")
 	}
-	return &Recognizer{Net: net, Charset: cs, Recoder: rc}, nil
+
+	// Dict::LoadLSTM (src/dict/dict.cpp:292) reads the punctuation, word and
+	// number dawgs. A model missing them still recognizes text; it just loses
+	// the dictionary-weighted beam, so an absent component is not an error.
+	var punc, word, number *tessdata.Dawg
+	for _, l := range []struct {
+		typ tessdata.Type
+		dst **tessdata.Dawg
+	}{
+		{tessdata.TypeLSTMPuncDawg, &punc},
+		{tessdata.TypeLSTMSystemDawg, &word},
+		{tessdata.TypeLSTMNumberDawg, &number},
+	} {
+		e, ok := c.Entry(l.typ)
+		if !ok {
+			continue
+		}
+		d, err := tessdata.ParseDawg(e, c.Swapped())
+		if err != nil {
+			return nil, fmt.Errorf("recog: %v component: %w", l.typ, err)
+		}
+		if d.UnicharsetSize != cs.Size() {
+			return nil, fmt.Errorf("recog: the %v was built for a %d-entry unicharset but the model's has %d", l.typ, d.UnicharsetSize, cs.Size())
+		}
+		*l.dst = d
+	}
+	var lex *dict.Dict
+	if punc != nil || word != nil || number != nil {
+		lex = dict.New(cs, punc, word, number)
+	}
+	return &Recognizer{Net: net, Charset: cs, Recoder: rc, Dict: lex}, nil
 }
 
 // Symbol is one decoded character and the timestep run it occupies.

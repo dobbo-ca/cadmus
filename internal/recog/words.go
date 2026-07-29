@@ -96,12 +96,13 @@ func (r *Recognizer) Recognize(img image.Image) (Line, error) {
 	if err != nil {
 		return Line{}, err
 	}
-	syms, err := r.GreedyDecode(out)
+	// BeamDecode already carries a certainty and a rating per character: the
+	// beam's node scores are what the dictionary weighting acts on, so scoring
+	// the timesteps a second time here would throw that weighting away.
+	scored, err := r.BeamDecode(out)
 	if err != nil {
 		return Line{}, err
 	}
-	// The greedy path has no lexicon, so every character takes the dict ratio.
-	scored := ScoreSymbols(out, syms, DictRatio)
 	bounds := CharBoundaries(scored, out.Map.Len())
 
 	lineBox := img.Bounds()
