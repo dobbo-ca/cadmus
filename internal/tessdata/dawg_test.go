@@ -279,3 +279,117 @@ func TestDawgNode0IsSortedAndDuplicateFree(t *testing.T) {
 		t.Errorf("word dawg node 0 has %d edges; want 67 (measured during planning)", got)
 	}
 }
+
+// The edge-accessor tests below share one two-edge graph:
+//
+//	edge 0: node 0, unichar 1, last, not end-of-word, next_node 1
+//	edge 1: node 1, unichar 2, last, end-of-word,     next_node 0
+//
+// buildSyntheticDawg layers on buildDawg/makeEdge rather than adding a second
+// wire-format builder.
+func buildSyntheticDawg(t *testing.T, unicharsetSize int) *Dawg {
+	t.Helper()
+	edges := []uint64{
+		makeEdge(1, true, false, 1),
+		makeEdge(2, true, true, 0),
+	}
+	d, err := ParseDawg(buildDawg(unicharsetSize, edges), false)
+	if err != nil {
+		t.Fatalf("ParseDawg() error = %v", err)
+	}
+	return d
+}
+
+func (d *Dawg) emptySlotForTest() uint64        { return d.emptySlot() }
+func (d *Dawg) setEdgeForTest(i int, v uint64)  { d.edges[i] = v }
+func (d *Dawg) isEmptySlotForTest(e int64) bool { return d.edges[e] == d.emptySlot() }
+func (d *Dawg) isForwardForTest(e int64) bool {
+	return d.edges[e]&(dawgDirectionFlag<<d.flagStartBit) == 0
+}
+
+func TestDawgEdgeAccessors(t *testing.T) {
+	d := buildSyntheticDawg(t, 112)
+
+	e := d.EdgeChar(0, 1, false)
+	if e != 0 {
+		t.Fatalf("EdgeChar(0, 1, false) = %d; want edge 0", e)
+	}
+	if got := d.UnicharID(e); got != 1 {
+		t.Errorf("UnicharID(0) = %d; want 1", got)
+	}
+	if got := d.NextNode(e); got != 1 {
+		t.Errorf("NextNode(0) = %d; want 1", got)
+	}
+	if d.EndOfWord(e) {
+		t.Error("edge 0 is flagged end-of-word; it should not be")
+	}
+
+	e2 := d.EdgeChar(1, 2, true)
+	if e2 != 1 {
+		t.Fatalf("EdgeChar(1, 2, true) = %d; want edge 1", e2)
+	}
+	if !d.EndOfWord(e2) {
+		t.Error("edge 1 is not flagged end-of-word")
+	}
+	if d.EdgeChar(0, 99, false) != NoEdge {
+		t.Error("EdgeChar for an absent id did not return NoEdge")
+	}
+	if d.EdgeChar(-1, 1, false) != NoEdge || d.EdgeChar(int64(d.NumEdges()), 1, false) != NoEdge {
+		t.Error("EdgeChar with an out-of-range node did not return NoEdge")
+	}
+}
+
+// SquishedDawg::edge_char_of guards its linear scan with edge_occupied(edge),
+// which is `edges_[edge] != next_node_mask_`. An empty slot has unichar_id 0 —
+// the same value as kPatternUnicharID — so without the guard a punctuation-dawg
+// wildcard probe can match a hole and NextNode then returns a huge index.
+func TestEdgeCharSkipsAnEmptySlot(t *testing.T) {
+	d := buildSyntheticDawg(t, 112)
+	d.setEdgeForTest(0, d.emptySlotForTest()) // test-only helper
+	if got := d.EdgeChar(0, PatternUnicharID, false); got != NoEdge {
+		t.Errorf("EdgeChar over an empty slot = %d; want NoEdge", got)
+	}
+}
+
+// The structural assumptions EdgeChar's linear scan relies on, asserted on the
+// shipped model rather than assumed. If any of these fails on a future model,
+// EdgeChar must grow the binary search and the direction check that
+// edge_char_of and read_squished_dawg have.
+func TestRealDawgsSatisfyTheLinearScanPreconditions(t *testing.T) {
+	punc, word, number, charset := loadRealDawgs(t)
+	for name, d := range map[string]*Dawg{"punc": punc, "word": word, "number": number} {
+		var empty, backward int
+		for e := range int64(d.NumEdges()) {
+			if d.isEmptySlotForTest(e) {
+				empty++
+				continue
+			}
+			if !d.isForwardForTest(e) {
+				backward++
+			}
+			if d.NextNode(e) >= int64(d.NumEdges()) {
+				t.Fatalf("%s: edge %d has next_node %d, past the end", name, e, d.NextNode(e))
+			}
+			if d.UnicharID(e) >= charset.Size() {
+				t.Fatalf("%s: edge %d has unichar id %d, past the charset", name, e, d.UnicharID(e))
+			}
+		}
+		if empty != 0 || backward != 0 {
+			t.Errorf("%s: %d empty slots, %d backward edges; the linear scan assumes zero of each", name, empty, backward)
+		}
+		// Node 0's run must have no duplicate unichar ids, which is what makes a
+		// linear first-match equivalent to edge_char_of's binary search there.
+		seen := map[int]bool{}
+		for e := int64(0); e < int64(d.NumEdges()); e++ {
+			id := d.UnicharID(e)
+			if seen[id] {
+				t.Errorf("%s: root has a duplicate unichar id %d; linear scan and binary search can disagree", name, id)
+			}
+			seen[id] = true
+			if d.lastEdge(e) {
+				t.Logf("%s: root has %d edges", name, e+1)
+				break
+			}
+		}
+	}
+}

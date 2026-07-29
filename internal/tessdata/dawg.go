@@ -192,3 +192,68 @@ func (d *Dawg) prefixInDawg(ids []int, requiresComplete bool) bool {
 	}
 	return d.edgeOf(node, ids[len(ids)-1], requiresComplete) >= 0
 }
+
+// NoEdge is Tesseract's NO_EDGE.
+const NoEdge = int64(-1)
+
+// PatternUnicharID is Dawg::kPatternUnicharID: inside a punctuation or number
+// dawg, unichar id 0 on an edge is a wildcard, not the space character. The
+// collision with UnicharSpace is deliberate in Tesseract.
+const PatternUnicharID = 0
+
+// UnicharID is unichar_id_from_edge_rec: the character this edge consumes.
+func (d *Dawg) UnicharID(edge int64) int { return int(d.edges[edge] & d.letterMask) }
+
+// NextNode is next_node_from_edge_rec. No mask is needed: nextNodeStartBit is
+// flagStartBit + 3, so the shift already drops the id and the three flags.
+func (d *Dawg) NextNode(edge int64) int64 {
+	return int64(d.edges[edge] >> d.nextNodeStartBit)
+}
+
+// EndOfWord is end_of_word_from_edge_rec: this edge terminates a word.
+func (d *Dawg) EndOfWord(edge int64) bool {
+	return d.edges[edge]&(dawgWordEndFlag<<d.flagStartBit) != 0
+}
+
+// lastEdge is marker_flag_from_edge_rec: this edge closes its node's run.
+func (d *Dawg) lastEdge(edge int64) bool {
+	return d.edges[edge]&(dawgMarkerFlag<<d.flagStartBit) != 0
+}
+
+// emptySlot is edge_occupied's sentinel: an edge record equal to
+// next_node_mask_ is a hole left by the squishing pass, not an edge.
+func (d *Dawg) emptySlot() uint64 { return ^uint64(0) << d.nextNodeStartBit }
+
+// EdgeChar is SquishedDawg::edge_char_of: the edge leaving node on unicharID,
+// or NoEdge.
+//
+// Two divergences from the C++, both deliberate and both bounded by
+// TestRealDawgsSatisfyTheLinearScanPreconditions:
+//
+//   - Node 0 is scanned linearly rather than binary-searched. The two agree
+//     whenever the root's unichar ids are distinct, which the test asserts on
+//     every shipped dawg; eng's roots are 8, 67 and 40 edges.
+//   - The direction bit is not tested, because edge_char_of does not test it
+//     either — read_squished_dawg's validation loop does, at load time, and a
+//     written file contains only forward edges.
+//
+// The empty-slot guard IS reproduced, because edge_char_of has it
+// (`if (edge != NO_EDGE && edge_occupied(edge))`) and an empty slot's unichar id
+// is 0, which is exactly the wildcard a punctuation-dawg probe asks for.
+func (d *Dawg) EdgeChar(node int64, unicharID int, wordEnd bool) int64 {
+	if node < 0 || node >= int64(len(d.edges)) {
+		return NoEdge
+	}
+	if d.edges[node] == d.emptySlot() {
+		return NoEdge
+	}
+	for e := node; e < int64(len(d.edges)); e++ {
+		if d.UnicharID(e) == unicharID && (!wordEnd || d.EndOfWord(e)) {
+			return e
+		}
+		if d.lastEdge(e) {
+			break
+		}
+	}
+	return NoEdge
+}
