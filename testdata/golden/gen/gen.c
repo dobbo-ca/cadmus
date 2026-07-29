@@ -277,6 +277,40 @@ int main(int argc, char **argv) {
     dumpFloats(argv[2], "deskew_meta.bin", meta, 5);
     pixDestroy(&rot);
 
+    // Scaling goldens for internal/imaging/scalegray.go. The oracle is
+    // pixScale, because ImageData::PreScale calls exactly that — sharpening
+    // included. These factors reach every 8bpp branch of pixScaleGeneral:
+    //   1.0    identity short-circuit (pixCopy, no resampling)
+    //   0.80   pixScaleGrayLI   + pixUnsharpMasking(halfwidth 2, fract 0.4)
+    //   0.50   pixScaleAreaMap2 + pixUnsharpMasking(halfwidth 1, fract 0.2)
+    //   0.35   pixScaleAreaMap  + pixUnsharpMasking(halfwidth 1, fract 0.2)
+    //   0.015  pixScaleSmooth, unsharpened because maxscale <= 0.2
+    static const struct { const char *name; float f; } scaleCases[] = {
+        { "scale_identity", 1.0f },
+        { "scale_li",       0.80f },
+        { "scale_areamap2", 0.50f },
+        { "scale_areamap",  0.35f },
+        { "scale_smooth",   0.015f },
+    };
+    for (size_t i = 0; i < sizeof scaleCases / sizeof scaleCases[0]; i++) {
+        snprintf(path, sizeof path, "%s/%s.bin", argv[2], scaleCases[i].name);
+        PIX *s = pixScale(gray, scaleCases[i].f, scaleCases[i].f);
+        dump(path, s);
+        pixDestroy(&s);
+    }
+
+    // The two upscaling special cases, pixScaleGray2xLI and pixScaleGray4xLI,
+    // on a 100x70 crop so the goldens stay small. Above 1.4 pixScale does no
+    // sharpening, so these isolate the interpolation kernels.
+    BOX *upBox = boxCreate(300, 150, 100, 70);
+    PIX *upIn = pixClipRectangle(gray, upBox, NULL);
+    snprintf(path, sizeof path, "%s/scale_up_in.bin", argv[2]);
+    dump(path, upIn);
+    dumpOwned(argv[2], "scale_2xli.bin", pixScale(upIn, 2.0f, 2.0f));
+    dumpOwned(argv[2], "scale_4xli.bin", pixScale(upIn, 4.0f, 4.0f));
+    pixDestroy(&upIn);
+    boxDestroy(&upBox);
+
     boxDestroy(&crop); boxDestroy(&sfBox); boxDestroy(&distBox);
     pixDestroy(&ropDst); pixDestroy(&ropSrc);
     pixDestroy(&sfMask); pixDestroy(&sfSeed);

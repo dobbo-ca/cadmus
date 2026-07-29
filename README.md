@@ -11,7 +11,10 @@ fine-tuned in-process.
 > Cadmus brought the alphabet to Greece. This library turns pixels back into
 > letters.
 
-**Status:** design approved, implementation not started. See
+**Status:** L0 (image core) and L1 (recognizer runtime + `.traineddata` loader)
+are implemented. A line crop in, the correct text out, matching
+`tesseract --psm 13` exactly on the acceptance corpus. Line *detection* is L2 and
+is not built yet, so there is no page-level entry point. See
 [the design spec](docs/superpowers/specs/2026-07-27-cadmus-design.md).
 
 ## Why

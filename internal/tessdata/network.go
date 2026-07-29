@@ -38,13 +38,29 @@ package tessdata
 // WeightMatrix::DeSerialize (src/lstm/weightmatrix.cpp):
 //
 //	uint8   mode               ; bit0 int8 weights, bit2 Adam, bit7 new format
-//	if !(mode & 128)           → DeSerializeOld, see parseMatrixShapeOld
-//	if mode & 1                → GENERIC_2D_ARRAY<int8>, then uint32 n + n float64 scales
-//	else                       → GENERIC_2D_ARRAY<float64>
-//	                             if training: updates_, and if Adam: dw_sq_sum_
+//	if !(mode & 128)           → DeSerializeOld (float32). REJECTED by parseMatrix.
+//	if mode & 1                → GENERIC_2D_ARRAY<int8> + scales. REJECTED by parseMatrix.
+//	else                       → GENERIC_2D_ARRAY<float64>, see readFloat64Matrix
+//	                             (training dumps, which add updates_/dw_sq_sum_,
+//	                             are rejected in parseLayer on the TS_ENABLED
+//	                             training-state byte)
 //
-// LSTMRecognizer::DeSerialize (src/lstm/lstmrecognizer.cpp) wraps the root
-// layer; see parseRecognizerTrailer for the fields that follow it.
+// LSTMRecognizer::DeSerialize (src/lstm/lstmrecognizer.cpp:133) wraps the root
+// layer: the lstm component is a serialized LSTMRecognizer, not a bare Network,
+// and eight more fields follow the graph. With include_charsets == false — the
+// case for every model that ships lstm-unicharset and lstm-recoder as separate
+// container components — the trailer is exactly:
+//
+//	string  network_str_        ; the build spec, e.g. "[1,36,0,1Ct3,...O1c1]"
+//	int32   training_flags_     ; TF_INT_MODE=1, TF_COMPRESS_UNICHARSET=64
+//	int32   training_iteration_
+//	int32   sample_iteration_
+//	int32   null_char_
+//	f32     adam_beta_          ; 4 bytes, not 8
+//	f32     learning_rate_
+//	f32     momentum_
+//
+// See ParseRecognizer, which reads and retains all eight.
 
 import (
 	"fmt"
@@ -127,21 +143,72 @@ const (
 
 	// maxMatrixDim is the UINT16_MAX cap in GENERIC_2D_ARRAY::DeSerializeSize.
 	maxMatrixDim = 65535
-
-	// maxScaleCount mirrors WeightMatrix::DeSerialize's scale-vector guard.
-	maxScaleCount = 100000000
 )
 
-// MatrixShape is the shape of one serialized weight matrix. Rows is the
-// matrix's output count (GENERIC_2D_ARRAY dim1), Cols its input count plus one
-// for the bias (dim2).
-type MatrixShape struct {
+const (
+	// Flags on WeightMatrix::DeSerialize's leading mode byte
+	// (src/lstm/weightmatrix.cpp:229).
+	modeInt8Flag uint8 = 1
+	// modeAdamFlag is declared for documentation and is deliberately NOT
+	// consulted: whether the Adam arrays follow a matrix is decided by the
+	// layer's training-state byte, not by this flag, and parseLayer rejects
+	// training dumps outright. Keying off it would desynchronise the stream —
+	// every matrix in tessdata_best eng has mode 132, kAdamFlag set, and no
+	// Adam arrays.
+	modeAdamFlag   uint8 = 4
+	modeDoubleFlag uint8 = 128
+)
+
+// Matrix is one deserialized weight matrix.
+//
+// Values is row-major with row stride Cols: element (row, col) is
+// Values[row*Cols+col]. GENERIC_2D_ARRAY's index() is
+// `column*dim2_ + row`, and its "column" is Tesseract's *output* index — so
+// despite the header comment in src/ccstruct/matrix.h calling the storage
+// column-major, the effective address math is dim1 contiguous runs of dim2.
+//
+// Rows is the output count (dim1). Cols is the input count plus ONE trailing
+// bias column (dim2): MatrixDotVectorInternal computes the dot product over
+// dim2-1 elements and then adds w[i][dim2-1] against an implicit 1.0
+// (src/lstm/weightmatrix.cpp:99).
+type Matrix struct {
 	Rows, Cols int
-	Int8       bool
+	Values     []float64
 }
 
-// Layer is one node of a deserialized LSTM network graph. Weight values are
-// skipped; only shapes are recorded.
+// At returns the weight connecting input col to output row.
+func (m *Matrix) At(row, col int) float64 { return m.Values[row*m.Cols+col] }
+
+// Stats returns the minimum, maximum and arithmetic mean of the matrix's
+// values. An empty matrix returns zeroes. Used by cadmusdump and by the tests
+// that check the payload is real numbers rather than misaligned garbage.
+func (m *Matrix) Stats() (min, max, mean float64) {
+	if len(m.Values) == 0 {
+		return 0, 0, 0
+	}
+	min, max = m.Values[0], m.Values[0]
+	var sum float64
+	for _, v := range m.Values {
+		if v < min {
+			min = v
+		}
+		if v > max {
+			max = v
+		}
+		sum += v
+	}
+	return min, max, sum / float64(len(m.Values))
+}
+
+// InputShape is Tesseract's StaticShape, the 4-D tensor description an Input
+// layer carries (src/lstm/static_shape.h). Width 0 means "determined at
+// runtime".
+type InputShape struct {
+	Batch, Height, Width, Depth, LossType int
+}
+
+// Layer is one node of a deserialized LSTM network graph, with its weight
+// values.
 type Layer struct {
 	Type       LayerType
 	Name       string
@@ -149,19 +216,63 @@ type Layer struct {
 	NumOutputs int
 	NumWeights int
 	Flags      int32
-	Matrices   []MatrixShape
+	Matrices   []Matrix
 	Children   []*Layer
+
+	// Type-specific fields, zero/nil unless the layer type sets them.
+	HalfX, HalfY int         // Convolve:          half_x_, half_y_
+	XScale       int         // Maxpool, Reconfig: x_scale_
+	YScale       int         // Maxpool, Reconfig: y_scale_
+	Shape        *InputShape // Input only
+	NA           int         // LSTM family:       na_
 }
 
-// ParseNetwork deserializes the graph in a .traineddata LSTM component. swap
-// comes from Container.Swapped.
+// TrainingFlags bits, from src/lstm/lstmrecognizer.h:44.
+const (
+	tfIntMode            int32 = 1
+	tfCompressUnicharset int32 = 64
+)
+
+// Recognizer is a parsed lstm component: the network graph plus the
+// LSTMRecognizer fields serialized after it.
+type Recognizer struct {
+	Network *Layer
+
+	// NetworkStr is the spec string the model was built from, e.g.
+	// "[1,36,0,1Ct3,3,16Mp3,3Lfys64Lfx96Lrx96Lfx512O1c1]". Its output count is
+	// a PLACEHOLDER: NetworkBuilder::ParseOutput overrides the number after
+	// O1c with the recoder's code range, which is why released models persist
+	// "O1c1". Never derive the output count from this string.
+	NetworkStr        string
+	TrainingFlags     int32
+	TrainingIteration int32
+
+	// SampleIteration seeds LSTMRecognizer::SetRandomSeed, which drives the
+	// random edge padding Convolve applies at image borders. L1b needs it.
+	SampleIteration int32
+
+	// NullChar is the network output index of the CTC blank. It is the
+	// authority: UnicharCompress::DefragmentCodeValues relocates the null code
+	// to the top of the range, so it is code_range-1 in practice, but the
+	// format does not require that and this field does.
+	NullChar int32
+
+	AdamBeta     float32
+	LearningRate float32
+	Momentum     float32
+}
+
+// IsIntMode reports whether the model carries int8-quantized weights.
+func (rec *Recognizer) IsIntMode() bool { return rec.TrainingFlags&tfIntMode != 0 }
+
+// ParseRecognizer deserializes a .traineddata lstm component. swap comes from
+// Container.Swapped.
 //
 // The component holds an LSTMRecognizer, not a bare network: the root layer is
-// followed by the recognizer's own fields. Those are consumed and discarded so
-// that the buffer can be required to end exactly where the format says it
-// should — a parser that desynchronises mid-graph produces a plausible-looking
-// tree and a non-empty tail, and that tail is what catches it.
-func ParseNetwork(data []byte, swap bool) (*Layer, error) {
+// followed by the recognizer's own fields. Requiring the buffer to end exactly
+// where the format says it should is what catches a parser that desynchronised
+// mid-graph and returned a plausible-looking tree.
+func ParseRecognizer(data []byte, swap bool) (*Recognizer, error) {
 	r := NewReader(data)
 	r.SetSwap(swap)
 
@@ -169,38 +280,51 @@ func ParseNetwork(data []byte, swap bool) (*Layer, error) {
 	if err != nil {
 		return nil, err
 	}
-	if r.Remaining() > 0 {
-		if err := parseRecognizerTrailer(r); err != nil {
-			return nil, fmt.Errorf("tessdata: %d bytes follow the network graph and are not a recognizer trailer (the graph parse desynchronised): %w", r.Remaining(), err)
-		}
+	rec := &Recognizer{Network: root}
+	if rec.NetworkStr, err = r.String(); err != nil {
+		return nil, fmt.Errorf("tessdata: reading network spec string (the graph parse may have desynchronised): %w", err)
 	}
-	if r.Remaining() != 0 {
-		return nil, fmt.Errorf("tessdata: %d bytes left unconsumed after the network graph; the parse desynchronised", r.Remaining())
-	}
-	return root, nil
-}
-
-// parseRecognizerTrailer consumes the LSTMRecognizer fields that follow the
-// root layer. Models that ship lstm-unicharset and lstm-recoder as separate
-// container components — every model in tessdata, tessdata_best and
-// tessdata_fast — write only these eight fields here.
-func parseRecognizerTrailer(r *Reader) error {
-	if _, err := r.String(); err != nil { // network_str_, the build spec string
-		return fmt.Errorf("reading network spec string: %w", err)
-	}
-	for _, field := range []string{"training_flags", "training_iteration", "sample_iteration", "null_char"} {
-		if _, err := r.Int32(); err != nil {
-			return fmt.Errorf("reading %s: %w", field, err)
+	for _, f := range []struct {
+		name string
+		dst  *int32
+	}{
+		{"training_flags", &rec.TrainingFlags},
+		{"training_iteration", &rec.TrainingIteration},
+		{"sample_iteration", &rec.SampleIteration},
+		{"null_char", &rec.NullChar},
+	} {
+		if *f.dst, err = r.Int32(); err != nil {
+			return nil, fmt.Errorf("tessdata: reading %s: %w", f.name, err)
 		}
 	}
 	// adam_beta_, learning_rate_ and momentum_ are declared `float` in
-	// src/lstm/lstmrecognizer.h — 4 bytes each, not 8.
-	for _, field := range []string{"adam_beta", "learning_rate", "momentum"} {
-		if _, err := r.Bytes(4); err != nil {
-			return fmt.Errorf("reading %s: %w", field, err)
+	// src/lstm/lstmrecognizer.h:350 — 4 bytes each, not 8.
+	for _, f := range []struct {
+		name string
+		dst  *float32
+	}{
+		{"adam_beta", &rec.AdamBeta},
+		{"learning_rate", &rec.LearningRate},
+		{"momentum", &rec.Momentum},
+	} {
+		if *f.dst, err = r.Float32(); err != nil {
+			return nil, fmt.Errorf("tessdata: reading %s: %w", f.name, err)
 		}
 	}
-	return nil
+	if r.Remaining() != 0 {
+		return nil, fmt.Errorf("tessdata: %d bytes left unconsumed after the lstm component; the parse desynchronised", r.Remaining())
+	}
+
+	if rec.IsIntMode() {
+		return nil, fmt.Errorf("tessdata: training_flags %d has TF_INT_MODE set: this is an int8-quantized model. Cadmus L1 implements the float weight path only; run ./testdata/fetch.sh to get the tessdata_best model", rec.TrainingFlags)
+	}
+	if rec.TrainingFlags&tfCompressUnicharset == 0 {
+		return nil, fmt.Errorf("tessdata: training_flags %d has TF_COMPRESS_UNICHARSET clear: the model has no recoder and LSTMRecognizer::LoadRecoder would synthesise a pass-through one. Cadmus requires a recoding model", rec.TrainingFlags)
+	}
+	if rec.NullChar < 0 || int(rec.NullChar) >= root.NumOutputs {
+		return nil, fmt.Errorf("tessdata: null_char %d is outside the network's %d outputs", rec.NullChar, root.NumOutputs)
+	}
+	return rec, nil
 }
 
 // parseLayer reads the common Network header and dispatches on layer type.
@@ -239,6 +363,14 @@ func parseLayer(r *Reader) (*Layer, error) {
 	if ni < 0 || no < 0 || numWeights < 0 {
 		return nil, fmt.Errorf("tessdata: invalid %v layer parameters: ni=%d no=%d num_weights=%d", typ, ni, no, numWeights)
 	}
+	// TS_ENABLED means the file is a training dump, whose weight matrices carry
+	// an extra updates_ array (and dw_sq_sum_ when kAdamFlag is set) that this
+	// parser does not read. LSTMTrainer::SaveRecognitionDump flips the state to
+	// TS_TEMP_DISABLE before writing, so no released model has TS_ENABLED;
+	// every layer of tessdata_best eng has state 2.
+	if training == tsEnabled {
+		return nil, fmt.Errorf("tessdata: %v layer %q has training state TS_ENABLED: training dumps are not supported", typ, name)
+	}
 
 	l := &Layer{
 		Type:       typ,
@@ -248,7 +380,6 @@ func parseLayer(r *Reader) (*Layer, error) {
 		NumWeights: int(numWeights),
 		Flags:      flags,
 	}
-	isTraining := training == tsEnabled
 
 	switch typ {
 	case LayerSeries, LayerParallel, LayerReplicated, LayerParRLLSTM, LayerParUDLSTM,
@@ -256,18 +387,20 @@ func parseLayer(r *Reader) (*Layer, error) {
 		err = parsePlumbing(r, l)
 	case LayerSoftmax, LayerSoftmaxNoCTC, LayerRelu, LayerTanh, LayerLinear,
 		LayerLogistic, LayerPosClip, LayerSymClip:
-		err = parseFullyConnected(r, l, isTraining)
+		err = parseFullyConnected(r, l)
 	case LayerLSTM, LayerLSTMSummary, LayerLSTMSoftmax, LayerLSTMSoftmaxEncoded:
-		err = parseLSTM(r, l, isTraining)
+		err = parseLSTM(r, l)
 	case LayerConvolve:
-		// half_x_, half_y_ (src/lstm/convolve.cpp).
-		err = skipInt32s(r, 2)
+		// half_x_, half_y_ (src/lstm/convolve.cpp:45). Convolve holds no
+		// weights: it is a pure im2col gather and recomputes
+		// no_ = ni_*(2*half_x+1)*(2*half_y+1).
+		l.HalfX, l.HalfY, err = parseInt32Pair(r)
 	case LayerMaxpool, LayerReconfig:
-		// x_scale_, y_scale_ (src/lstm/reconfig.cpp; Maxpool delegates to it).
-		err = skipInt32s(r, 2)
+		// x_scale_, y_scale_ (src/lstm/reconfig.cpp:60). Maxpool serializes
+		// identical bytes and then overrides no_ = ni_ (src/lstm/maxpool.cpp:29).
+		l.XScale, l.YScale, err = parseInt32Pair(r)
 	case LayerInput:
-		// StaticShape: batch_, height_, width_, depth_, loss_type_.
-		err = skipInt32s(r, 5)
+		l.Shape, err = parseInputShape(r)
 	default:
 		// NT_NONE and NT_TENSORFLOW have no deserializer in Tesseract either.
 		return nil, fmt.Errorf("tessdata: unsupported network layer type %v", typ)
@@ -275,7 +408,60 @@ func parseLayer(r *Reader) (*Layer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tessdata: %v layer %q: %w", typ, name, err)
 	}
+
+	// A layer's num_weights is the total element count of its own matrices
+	// (bias columns included) plus its children's num_weights. Verified exactly
+	// on every layer of tessdata_best eng: ConvNL 160 == 16*10,
+	// Lfx96 61824 == 4*96*161, Output 56943 == 111*513, root Series 1461007 ==
+	// the sum of its children. A mismatch means the parse desynchronised.
+	//
+	// The identity holds by construction for every layer type, including
+	// NT_LSTM_SOFTMAX / NT_LSTM_SOFTMAX_ENCODED, whose nested softmax lives in
+	// Children and which eng does not use:
+	//
+	//	LSTM::InitWeights           src/lstm/lstm.cpp:175   sums the gate
+	//	                            matrices, then adds softmax_->InitWeights()
+	//	                            when softmax_ != nullptr.
+	//	Plumbing::InitWeights       src/lstm/plumbing.cpp:50 sums its stack.
+	//	FullyConnected::InitWeights src/lstm/fullyconnected.cpp:86 is
+	//	                            no_ * (ni_ + 1), i.e. rows*cols.
+	total := 0
+	for i := range l.Matrices {
+		total += l.Matrices[i].Rows * l.Matrices[i].Cols
+	}
+	for _, c := range l.Children {
+		total += c.NumWeights
+	}
+	if total != l.NumWeights {
+		return nil, fmt.Errorf("tessdata: %v layer %q declares num_weights=%d but its matrices and children total %d", typ, name, l.NumWeights, total)
+	}
 	return l, nil
+}
+
+func parseInt32Pair(r *Reader) (int, int, error) {
+	a, err := r.Int32()
+	if err != nil {
+		return 0, 0, fmt.Errorf("reading first field: %w", err)
+	}
+	b, err := r.Int32()
+	if err != nil {
+		return 0, 0, fmt.Errorf("reading second field: %w", err)
+	}
+	return int(a), int(b), nil
+}
+
+// parseInputShape reads StaticShape's batch_, height_, width_, depth_ and
+// loss_type_, in that order (src/lstm/static_shape.h:83).
+func parseInputShape(r *Reader) (*InputShape, error) {
+	var s InputShape
+	for i, dst := range []*int{&s.Batch, &s.Height, &s.Width, &s.Depth, &s.LossType} {
+		v, err := r.Int32()
+		if err != nil {
+			return nil, fmt.Errorf("reading input shape field %d: %w", i, err)
+		}
+		*dst = int(v)
+	}
+	return &s, nil
 }
 
 // parseLayerType mirrors getNetworkType in src/lstm/network.cpp: current
@@ -347,12 +533,12 @@ func skipFloat32Slice(r *Reader) error {
 }
 
 // parseFullyConnected mirrors FullyConnected::DeSerialize.
-func parseFullyConnected(r *Reader, l *Layer, training bool) error {
-	shape, err := parseMatrixShape(r, training)
+func parseFullyConnected(r *Reader, l *Layer) error {
+	m, err := parseMatrix(r)
 	if err != nil {
 		return fmt.Errorf("reading weights: %w", err)
 	}
-	l.Matrices = append(l.Matrices, shape)
+	l.Matrices = append(l.Matrices, m)
 	return nil
 }
 
@@ -367,11 +553,12 @@ const (
 )
 
 // parseLSTM mirrors LSTM::DeSerialize in src/lstm/lstm.cpp.
-func parseLSTM(r *Reader, l *Layer, training bool) error {
+func parseLSTM(r *Reader, l *Layer) error {
 	na, err := r.Int32()
 	if err != nil {
 		return fmt.Errorf("reading na: %w", err)
 	}
+	l.NA = int(na)
 	// nf_ is the number of softmax outputs fed back into the input.
 	var nf int
 	switch l.Type {
@@ -386,15 +573,15 @@ func parseLSTM(r *Reader, l *Layer, training bool) error {
 		if w == gateGFS && !is2D {
 			continue
 		}
-		shape, err := parseMatrixShape(r, training)
+		m, err := parseMatrix(r)
 		if err != nil {
 			return fmt.Errorf("reading gate weights %d: %w", w, err)
 		}
-		l.Matrices = append(l.Matrices, shape)
+		l.Matrices = append(l.Matrices, m)
 		if w == gateCI {
 			// ns_ = gate_weights_[CI].NumOutputs(); the 2-D test is exactly
 			// Tesseract's, and decides whether a GFS matrix follows.
-			ns := shape.Rows
+			ns := m.Rows
 			is2D = int(na)-nf == l.NumInputs+2*ns
 		}
 	}
@@ -409,113 +596,61 @@ func parseLSTM(r *Reader, l *Layer, training bool) error {
 	return nil
 }
 
-// parseMatrixShape mirrors WeightMatrix::DeSerialize, recording the shape and
-// skipping the payload.
-func parseMatrixShape(r *Reader, training bool) (MatrixShape, error) {
+// parseMatrix mirrors WeightMatrix::DeSerialize for the only configuration
+// cadmus supports: modern format (kDoubleFlag), float64 weights (kInt8Flag
+// clear), not a training dump. Every other configuration is an error, loudly.
+func parseMatrix(r *Reader) (Matrix, error) {
 	mode, err := r.Uint8()
 	if err != nil {
-		return MatrixShape{}, fmt.Errorf("reading matrix mode: %w", err)
+		return Matrix{}, fmt.Errorf("reading matrix mode: %w", err)
 	}
-	intMode := mode&1 != 0
-	useAdam := mode&4 != 0
-	if mode&128 == 0 {
-		return parseMatrixShapeOld(r, training, intMode)
+	if mode&modeDoubleFlag == 0 {
+		return Matrix{}, fmt.Errorf("matrix mode %d has kDoubleFlag clear, selecting WeightMatrix::DeSerializeOld (float32 weights); cadmus supports only the modern float64 format", mode)
 	}
-
-	if intMode {
-		rows, cols, err := skip2DArray(r, 1)
-		if err != nil {
-			return MatrixShape{}, fmt.Errorf("reading int8 weights: %w", err)
-		}
-		n, err := r.Uint32()
-		if err != nil {
-			return MatrixShape{}, fmt.Errorf("reading scale count: %w", err)
-		}
-		if n > maxScaleCount {
-			return MatrixShape{}, fmt.Errorf("scale count %d exceeds maximum %d", n, maxScaleCount)
-		}
-		if _, err := r.Bytes(8 * int(n)); err != nil {
-			return MatrixShape{}, fmt.Errorf("reading scales: %w", err)
-		}
-		return MatrixShape{Rows: rows, Cols: cols, Int8: true}, nil
+	if mode&modeInt8Flag != 0 {
+		return Matrix{}, fmt.Errorf("matrix mode %d has kInt8Flag set: this is an int8-quantized model. Cadmus L1 implements the float weight path only; run ./testdata/fetch.sh to get the tessdata_best model", mode)
 	}
-
-	rows, cols, err := skip2DArray(r, 8)
-	if err != nil {
-		return MatrixShape{}, fmt.Errorf("reading float64 weights: %w", err)
-	}
-	if training {
-		if _, _, err := skip2DArray(r, 8); err != nil {
-			return MatrixShape{}, fmt.Errorf("reading updates: %w", err)
-		}
-		if useAdam {
-			if _, _, err := skip2DArray(r, 8); err != nil {
-				return MatrixShape{}, fmt.Errorf("reading dw_sq_sum: %w", err)
-			}
-		}
-	}
-	return MatrixShape{Rows: rows, Cols: cols}, nil
+	return readFloat64Matrix(r)
 }
 
-// parseMatrixShapeOld mirrors WeightMatrix::DeSerializeOld, which stores
-// weights as float32 and scales as a float32 vector.
-func parseMatrixShapeOld(r *Reader, training, intMode bool) (MatrixShape, error) {
-	var shape MatrixShape
-	if intMode {
-		rows, cols, err := skip2DArray(r, 1)
-		if err != nil {
-			return MatrixShape{}, fmt.Errorf("reading legacy int8 weights: %w", err)
-		}
-		if err := skipFloat32Slice(r); err != nil {
-			return MatrixShape{}, fmt.Errorf("reading legacy scales: %w", err)
-		}
-		shape = MatrixShape{Rows: rows, Cols: cols, Int8: true}
-	} else {
-		rows, cols, err := skip2DArray(r, 4)
-		if err != nil {
-			return MatrixShape{}, fmt.Errorf("reading legacy float32 weights: %w", err)
-		}
-		shape = MatrixShape{Rows: rows, Cols: cols}
-	}
-	if training {
-		// updates_, then the dead errs array. Both float32.
-		for i := 0; i < 2; i++ {
-			if _, _, err := skip2DArray(r, 4); err != nil {
-				return MatrixShape{}, fmt.Errorf("reading legacy training array %d: %w", i, err)
-			}
-		}
-	}
-	return shape, nil
-}
-
-// skip2DArray reads a GENERIC_2D_ARRAY<T> header, skips its payload, and
-// returns its dimensions. elemSize is sizeof(T).
-func skip2DArray(r *Reader, elemSize int) (rows, cols int, err error) {
+// readFloat64Matrix mirrors GENERIC_2D_ARRAY<double>::DeSerialize +
+// DeSerializeSize (src/ccstruct/matrix.h:197, :567):
+//
+//	int32   dim1
+//	int32   dim2
+//	f64     empty_             ; ONE padding element, before the payload
+//	f64     array_[dim1*dim2]
+//
+// empty_ is read and discarded. It is 0.0 in every matrix of tessdata_best
+// eng, but nothing in the format requires that, so its value is not asserted.
+func readFloat64Matrix(r *Reader) (Matrix, error) {
 	dim1, err := r.Int32()
 	if err != nil {
-		return 0, 0, fmt.Errorf("reading dim1: %w", err)
+		return Matrix{}, fmt.Errorf("reading dim1: %w", err)
 	}
 	dim2, err := r.Int32()
 	if err != nil {
-		return 0, 0, fmt.Errorf("reading dim2: %w", err)
+		return Matrix{}, fmt.Errorf("reading dim2: %w", err)
 	}
+	// Tesseract checks only the UINT16_MAX upper bound; a negative size passes
+	// and then misbehaves inside Resize(). Reject it here.
 	if dim1 < 0 || dim1 > maxMatrixDim || dim2 < 0 || dim2 > maxMatrixDim {
-		return 0, 0, fmt.Errorf("implausible matrix dimensions %dx%d", dim1, dim2)
+		return Matrix{}, fmt.Errorf("implausible matrix dimensions %dx%d", dim1, dim2)
 	}
-	// One empty_ element precedes the dim1*dim2 payload elements.
-	if _, err := r.Bytes(elemSize * (1 + int(dim1)*int(dim2))); err != nil {
-		return 0, 0, fmt.Errorf("skipping %dx%d payload: %w", dim1, dim2, err)
+	n := int(dim1) * int(dim2)
+	if r.Remaining() < 8*(1+n) {
+		return Matrix{}, fmt.Errorf("matrix %dx%d needs %d bytes, %d remain", dim1, dim2, 8*(1+n), r.Remaining())
 	}
-	return int(dim1), int(dim2), nil
-}
-
-func skipInt32s(r *Reader, n int) error {
-	for i := 0; i < n; i++ {
-		if _, err := r.Int32(); err != nil {
-			return fmt.Errorf("reading field %d: %w", i, err)
+	if _, err := r.Float64(); err != nil { // empty_
+		return Matrix{}, fmt.Errorf("reading empty_: %w", err)
+	}
+	m := Matrix{Rows: int(dim1), Cols: int(dim2), Values: make([]float64, n)}
+	for i := range m.Values {
+		if m.Values[i], err = r.Float64(); err != nil {
+			return Matrix{}, fmt.Errorf("reading element %d of %dx%d: %w", i, dim1, dim2, err)
 		}
 	}
-	return nil
+	return m, nil
 }
 
 // ceilLog2 is ceil_log2 from src/lstm/lstm.cpp.
@@ -536,20 +671,42 @@ func ceilLog2(n uint32) int {
 // Tree writes an indented one-line-per-layer rendering of the graph.
 func (l *Layer) Tree(w io.Writer) { l.tree(w, 0) }
 
+// gateNames labels an LSTM layer's matrices in serialization order
+// (LSTM::WeightType, src/lstm/lstm.h:32). Non-LSTM layers get a bare index.
+var gateNames = [...]string{"CI", "GI", "GF1", "GO", "GFS"}
+
 func (l *Layer) tree(w io.Writer, depth int) {
-	fmt.Fprintf(w, "%s%v %q ni=%d no=%d weights=%d",
-		strings.Repeat("  ", depth), l.Type, l.Name, l.NumInputs, l.NumOutputs, l.NumWeights)
-	if len(l.Matrices) > 0 {
-		shapes := make([]string, len(l.Matrices))
-		for i, m := range l.Matrices {
-			shapes[i] = fmt.Sprintf("%dx%d", m.Rows, m.Cols)
-			if m.Int8 {
-				shapes[i] += "(int8)"
-			}
-		}
-		fmt.Fprintf(w, " [matrices: %s]", strings.Join(shapes, ", "))
+	pad := strings.Repeat("  ", depth)
+	_, _ = fmt.Fprintf(w, "%s%v %q ni=%d no=%d", pad, l.Type, l.Name, l.NumInputs, l.NumOutputs)
+	if l.NA != 0 {
+		_, _ = fmt.Fprintf(w, " na=%d", l.NA)
 	}
-	fmt.Fprintln(w)
+	_, _ = fmt.Fprintf(w, " weights=%d\n", l.NumWeights)
+
+	switch l.Type {
+	case LayerInput:
+		if s := l.Shape; s != nil {
+			_, _ = fmt.Fprintf(w, "%s    shape batch=%d height=%d width=%d depth=%d loss=%d\n",
+				pad, s.Batch, s.Height, s.Width, s.Depth, s.LossType)
+		}
+	case LayerConvolve:
+		_, _ = fmt.Fprintf(w, "%s    half_x=%d half_y=%d\n", pad, l.HalfX, l.HalfY)
+	case LayerMaxpool, LayerReconfig:
+		_, _ = fmt.Fprintf(w, "%s    x_scale=%d y_scale=%d\n", pad, l.XScale, l.YScale)
+	}
+
+	isLSTM := l.Type == LayerLSTM || l.Type == LayerLSTMSummary ||
+		l.Type == LayerLSTMSoftmax || l.Type == LayerLSTMSoftmaxEncoded
+	for i := range l.Matrices {
+		m := &l.Matrices[i]
+		label := ""
+		if isLSTM && i < len(gateNames) {
+			label = gateNames[i]
+		}
+		min, max, mean := m.Stats()
+		_, _ = fmt.Fprintf(w, "%s    [%d] %-3s %dx%d min=%f max=%f mean=%f\n",
+			pad, i, label, m.Rows, m.Cols, min, max, mean)
+	}
 	for _, c := range l.Children {
 		c.tree(w, depth+1)
 	}

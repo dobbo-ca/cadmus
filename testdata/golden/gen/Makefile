@@ -8,5 +8,8 @@ all: gen
 gen: gen.c
 	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
 
+scaleline: scaleline.c
+	$(CC) $(CFLAGS) -o $@ $< $(LDFLAGS)
+
 clean:
-	rm -f gen
+	rm -f gen scaleline

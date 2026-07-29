@@ -3,6 +3,7 @@
 *.traineddata
 testdata/corpus/images/
 testdata/golden/gen/gen
+testdata/golden/gen/scaleline
 .DS_Store
 
 # Beads / Dolt files (added by bd init)
