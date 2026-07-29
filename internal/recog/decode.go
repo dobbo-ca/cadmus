@@ -75,7 +75,7 @@ func NewRecognizer(model []byte) (*Recognizer, error) {
 	// GetFinalCodes) collapses to a no-op. internal/tessdata loads multi-code
 	// recoders happily; the restriction is the beam's, so it lives here.
 	if rc.MaxCodeLen() != 1 {
-		return nil, fmt.Errorf("recog: recoder has codes up to %d long; L1b supports single-code recoders only (see cad-l1-cjk)", rc.MaxCodeLen())
+		return nil, fmt.Errorf("recog: recoder has codes up to %d long; L1b supports single-code recoders only (see cad-q16)", rc.MaxCodeLen())
 	}
 	if space := rc.Encode(tessdata.UnicharSpace); len(space) != 1 || space[0] != tessdata.UnicharSpace {
 		return nil, fmt.Errorf("recog: space was garbled in recoding")
