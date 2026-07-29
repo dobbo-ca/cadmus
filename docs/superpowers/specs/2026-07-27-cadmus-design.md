@@ -324,7 +324,13 @@ Start with `tessdata_best` (float weights). `tessdata_fast`'s int8-quantized pat
 (`IntSimdMatrix`) is a later optimization, not part of L1.
 
 **Verify:** for a corpus of line crops, Go output text must match
-`tesseract --psm 7` output. Per-character confidence within tolerance.
+`tesseract --psm 13` output. Per-character confidence within tolerance.
+
+The oracle is `--psm 13` (`PSM_RAW_LINE`), not `--psm 7`. `LSTMRecognizeWord`
+(`src/ccmain/linerec.cpp:229-250`) feeds the LSTM the whole image only for
+`PSM_SINGLE_WORD` and `PSM_RAW_LINE`; for `--psm 7` the box is a per-word,
+baseline-derived sub-crop, so its height is essentially never the crop's height.
+Cadmus normalizes the whole crop, so only `--psm 13` sees the same pixels.
 
 ### L2 — classical line detector (~2k LOC)
 
@@ -407,7 +413,7 @@ the implementation it replaces.
 | layer | oracle |
 |---|---|
 | L0 | Leptonica per-op output |
-| L1 | `tesseract --psm 7` on line crops |
+| L1 | `tesseract --psm 13` on line crops |
 | L2 | Tesseract line boxes (IoU) + end-to-end CER |
 | L3 | CER movement on held-out corrections |
 | L4 | Tesseract page-segmentation debug dumps, per stage |
@@ -470,7 +476,7 @@ individually before adoption; L5 ships no weights by default.
 
 | risk | severity | mitigation |
 |---|---|---|
-| `.traineddata` network deserialization is idiosyncratic and under-documented | high — blocks L1's loader half | It is mechanical, and `--psm 7` gives an exact oracle. First task is a spike: parse `eng.traineddata` and dump the network graph structure. If it fights back, only the loader is lost — the tensor runtime is unaffected, and L5's ONNX loader is promoted ahead of L2 to supply weights instead. |
+| `.traineddata` network deserialization is idiosyncratic and under-documented | high — blocks L1's loader half | It is mechanical, and `--psm 13` gives an exact oracle. First task is a spike: parse `eng.traineddata` and dump the network graph structure. If it fights back, only the loader is lost — the tensor runtime is unaffected, and L5's ONNX loader is promoted ahead of L2 to supply weights instead. |
 | L4 is a 20-25k LOC port | high — but late | Per-stage differential testing; L4 is optional to the project's value. L2 remains the fast path regardless. |
 | Pure-Go CPU inference is slow | medium | Kleio's OCR is queue-driven batch work behind KEDA scaling; throughput scales horizontally. Optimization path exists: int8 quantized weights, then `src/arch`-equivalent SIMD via Go assembly. |
 | Fine-tuning on user corrections degrades the model (overfitting, bad corrections) | medium | Held-out eval split, CER gate before a model version is promoted, and model versions are immutable and revertible. |
