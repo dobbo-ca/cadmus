@@ -41,7 +41,7 @@ func dumpActivations(modelPath, imagePath string, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", imagePath, err)
 	}
-	defer f.Close()
+	defer func() { _ = f.Close() }()
 	img, _, err := image.Decode(f)
 	if err != nil {
 		return fmt.Errorf("decoding %s: %w", imagePath, err)

@@ -28,10 +28,10 @@ func dump(path string, opt options, w io.Writer) error {
 	if err != nil {
 		return fmt.Errorf("parsing container: %w", err)
 	}
-	fmt.Fprintf(w, "%s\nversion: %s\nbyte-swapped: %v\n\ncomponents:\n", path, c.Version(), c.Swapped())
+	_, _ = fmt.Fprintf(w, "%s\nversion: %s\nbyte-swapped: %v\n\ncomponents:\n", path, c.Version(), c.Swapped())
 	for _, t := range c.Present() {
 		b, _ := c.Entry(t)
-		fmt.Fprintf(w, "  %-20s %9d bytes\n", t, len(b))
+		_, _ = fmt.Fprintf(w, "  %-20s %9d bytes\n", t, len(b))
 	}
 
 	// Preserved from the pre-L1a cadmusdump: a legacy (Tesseract-3, no LSTM)
@@ -39,7 +39,7 @@ func dump(path string, opt options, w io.Writer) error {
 	// useful. LoadModel requires the LSTM component, so bail before calling it
 	// rather than turning `cadmusdump some-legacy.traineddata` into exit 1.
 	if _, ok := c.Entry(tessdata.TypeLSTM); !ok {
-		fmt.Fprintln(w, "\nno lstm component (legacy-only model)")
+		_, _ = fmt.Fprintln(w, "\nno lstm component (legacy-only model)")
 		return nil
 	}
 
@@ -53,7 +53,7 @@ func dump(path string, opt options, w io.Writer) error {
 		return fmt.Errorf("loading model: %w", err)
 	}
 	rec := m.Recognizer
-	fmt.Fprintf(w, `
+	_, _ = fmt.Fprintf(w, `
 recognizer:
   spec           %s
   training_flags %d
@@ -83,33 +83,33 @@ network:
 
 func dumpUnicharset(w io.Writer, m *tessdata.Model) {
 	u := m.Unicharset
-	fmt.Fprintf(w, "\nunicharset: %d entries\n", u.Size())
+	_, _ = fmt.Fprintf(w, "\nunicharset: %d entries\n", u.Size())
 	for id := range u.Size() {
 		c, _ := u.Char(id)
-		fmt.Fprintf(w, "  %3d %-14q props=%x script=%-8s", id, c.Text, c.Properties, c.Script)
+		_, _ = fmt.Fprintf(w, "  %3d %-14q props=%x script=%-8s", id, c.Text, c.Properties, c.Script)
 		if c.Normed != c.Text {
-			fmt.Fprintf(w, " normed=%q", c.Normed)
+			_, _ = fmt.Fprintf(w, " normed=%q", c.Normed)
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 }
 
 func dumpRecoder(w io.Writer, m *tessdata.Model) {
 	rc := m.Recoder
-	fmt.Fprintf(w, "\nrecoder: %d entries, code range %d, max code length %d\n",
+	_, _ = fmt.Fprintf(w, "\nrecoder: %d entries, code range %d, max code length %d\n",
 		rc.Size(), rc.CodeRange(), rc.MaxCodeLen())
 	for id := range rc.Size() {
 		code := rc.Encode(id)
-		fmt.Fprintf(w, "  unichar %3d %-14q -> code %v", id, m.Unicharset.Text(id), code)
+		_, _ = fmt.Fprintf(w, "  unichar %3d %-14q -> code %v", id, m.Unicharset.Text(id), code)
 		if len(code) == 1 && int(code[0]) == m.NullChar() {
-			fmt.Fprint(w, "  BLANK")
+			_, _ = fmt.Fprint(w, "  BLANK")
 		}
-		fmt.Fprintln(w)
+		_, _ = fmt.Fprintln(w)
 	}
 }
 
 func dumpDawgs(w io.Writer, m *tessdata.Model) {
-	fmt.Fprintln(w, "\ndawgs:")
+	_, _ = fmt.Fprintln(w, "\ndawgs:")
 	for _, d := range []struct {
 		name string
 		d    *tessdata.Dawg
@@ -119,10 +119,10 @@ func dumpDawgs(w io.Writer, m *tessdata.Model) {
 		{"number", m.NumberDawg},
 	} {
 		if d.d == nil {
-			fmt.Fprintf(w, "  %-8s absent\n", d.name)
+			_, _ = fmt.Fprintf(w, "  %-8s absent\n", d.name)
 			continue
 		}
-		fmt.Fprintf(w, "  %-8s %9d edges, unicharset size %d\n", d.name, d.d.NumEdges(), d.d.UnicharsetSize)
+		_, _ = fmt.Fprintf(w, "  %-8s %9d edges, unicharset size %d\n", d.name, d.d.NumEdges(), d.d.UnicharsetSize)
 	}
 }
 

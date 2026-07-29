@@ -37,7 +37,7 @@ func loadCorpus(t testing.TB, arm string) []corpusLine {
 			t.Fatalf("opening %s: %v", p, err)
 		}
 		img, _, err := image.Decode(f)
-		f.Close()
+		_ = f.Close()
 		if err != nil {
 			t.Fatalf("decoding %s: %v", p, err)
 		}

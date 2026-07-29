@@ -677,22 +677,22 @@ var gateNames = [...]string{"CI", "GI", "GF1", "GO", "GFS"}
 
 func (l *Layer) tree(w io.Writer, depth int) {
 	pad := strings.Repeat("  ", depth)
-	fmt.Fprintf(w, "%s%v %q ni=%d no=%d", pad, l.Type, l.Name, l.NumInputs, l.NumOutputs)
+	_, _ = fmt.Fprintf(w, "%s%v %q ni=%d no=%d", pad, l.Type, l.Name, l.NumInputs, l.NumOutputs)
 	if l.NA != 0 {
-		fmt.Fprintf(w, " na=%d", l.NA)
+		_, _ = fmt.Fprintf(w, " na=%d", l.NA)
 	}
-	fmt.Fprintf(w, " weights=%d\n", l.NumWeights)
+	_, _ = fmt.Fprintf(w, " weights=%d\n", l.NumWeights)
 
 	switch l.Type {
 	case LayerInput:
 		if s := l.Shape; s != nil {
-			fmt.Fprintf(w, "%s    shape batch=%d height=%d width=%d depth=%d loss=%d\n",
+			_, _ = fmt.Fprintf(w, "%s    shape batch=%d height=%d width=%d depth=%d loss=%d\n",
 				pad, s.Batch, s.Height, s.Width, s.Depth, s.LossType)
 		}
 	case LayerConvolve:
-		fmt.Fprintf(w, "%s    half_x=%d half_y=%d\n", pad, l.HalfX, l.HalfY)
+		_, _ = fmt.Fprintf(w, "%s    half_x=%d half_y=%d\n", pad, l.HalfX, l.HalfY)
 	case LayerMaxpool, LayerReconfig:
-		fmt.Fprintf(w, "%s    x_scale=%d y_scale=%d\n", pad, l.XScale, l.YScale)
+		_, _ = fmt.Fprintf(w, "%s    x_scale=%d y_scale=%d\n", pad, l.XScale, l.YScale)
 	}
 
 	isLSTM := l.Type == LayerLSTM || l.Type == LayerLSTMSummary ||
@@ -704,7 +704,7 @@ func (l *Layer) tree(w io.Writer, depth int) {
 			label = gateNames[i]
 		}
 		min, max, mean := m.Stats()
-		fmt.Fprintf(w, "%s    [%d] %-3s %dx%d min=%f max=%f mean=%f\n",
+		_, _ = fmt.Fprintf(w, "%s    [%d] %-3s %dx%d min=%f max=%f mean=%f\n",
 			pad, i, label, m.Rows, m.Cols, min, max, mean)
 	}
 	for _, c := range l.Children {
