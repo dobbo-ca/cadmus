@@ -24,6 +24,22 @@ type Recognizer struct {
 	// Dict is the lexicon. Nil disables the dictionary beams; Recognize still
 	// works, at greedy-equivalent accuracy.
 	Dict *dict.Dict
+	// lexicon is what the model actually carried, so SetLexicon(true) can put
+	// Dict back after SetLexicon(false) cleared it.
+	lexicon *dict.Dict
+}
+
+// SetLexicon enables or disables dictionary weighting. Disabling it makes the
+// beam search behave like greedy decoding with better certainties, because the
+// score merge stays but the dawg beams are never populated.
+//
+// L2's WithLexicon(bool) option calls this.
+func (r *Recognizer) SetLexicon(enabled bool) {
+	if enabled {
+		r.Dict = r.lexicon
+		return
+	}
+	r.Dict = nil
 }
 
 // NewRecognizer loads a .traineddata file.
@@ -114,7 +130,7 @@ func NewRecognizer(model []byte) (*Recognizer, error) {
 	if punc != nil || word != nil || number != nil {
 		lex = dict.New(cs, punc, word, number)
 	}
-	return &Recognizer{Net: net, Charset: cs, Recoder: rc, Dict: lex}, nil
+	return &Recognizer{Net: net, Charset: cs, Recoder: rc, Dict: lex, lexicon: lex}, nil
 }
 
 // Symbol is one decoded character and the timestep run it occupies.
