@@ -3,6 +3,7 @@ package tessdata
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -56,6 +57,23 @@ func TestParseUnicharsetRealModel(t *testing.T) {
 		if got := u.Normed(tc.id); got != tc.normed {
 			t.Errorf("Normed(%d) = %q; want %q", tc.id, got, tc.normed)
 		}
+	}
+
+	// Pin the exact set of entries whose Normed differs from their Text. A
+	// parser that silently drops the normed column still passes every
+	// assertion above except the three curly-quote rows, and it would leave
+	// Normed == Text everywhere; the decode path needs the two to be
+	// distinguishable, because the `tesseract` binary prints Text
+	// (id_to_unichar_ext) while DecodeLabels prints Normed.
+	var differ []int
+	for id := range u.Size() {
+		if u.Text(id) != u.Normed(id) {
+			differ = append(differ, id)
+		}
+	}
+	want := []int{55, 59, 60, 70, 71, 84}
+	if !slices.Equal(differ, want) {
+		t.Errorf("ids whose Normed differs from Text = %v; want %v", differ, want)
 	}
 
 	// Properties are HEXADECIMAL. |Broken|0|1 carries "f"; a decimal parse
