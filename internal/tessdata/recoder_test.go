@@ -49,6 +49,17 @@ func TestParseRecoderRealModel(t *testing.T) {
 		t.Errorf("Encode(UnicharSpace) = %v; want [0]", got)
 	}
 
+	// Ids 1 (Joined) and 2 (|Broken|0|1) both encode to 110, which is also
+	// null_char_ — the CTC blank, pinned at 110 by TestLoadModelRealModel. That
+	// collision is what makes the mapping a *near*-permutation rather than a
+	// permutation, and it is harmless: neither id is a printable character and
+	// the blank is dropped before any of them can be emitted.
+	for _, id := range []int{UnicharJoined, UnicharBroken} {
+		if got := rc.Encode(id); len(got) != 1 || got[0] != 110 {
+			t.Errorf("Encode(%d) = %v; want [110] (the CTC blank)", id, got)
+		}
+	}
+
 	for _, tc := range []struct {
 		code []int32
 		id   int
