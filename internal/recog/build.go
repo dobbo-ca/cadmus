@@ -70,6 +70,38 @@ func Build(rec *tessdata.Recognizer) (*Network, error) {
 	return n, nil
 }
 
+// BuildWithTap is Build, with every layer wrapped so fn observes its output.
+func BuildWithTap(rec *tessdata.Recognizer, fn nn.Tap) (*Network, error) {
+	n, err := Build(rec)
+	if err != nil {
+		return nil, err
+	}
+	n.Root = wrapTap(n.Root, fn)
+	return n, nil
+}
+
+func wrapTap(l nn.Layer, fn nn.Tap) nn.Layer {
+	switch v := l.(type) {
+	case *nn.Series:
+		for i := range v.Stack {
+			v.Stack[i] = wrapTap(v.Stack[i], fn)
+		}
+	case *nn.Parallel:
+		for i := range v.Stack {
+			v.Stack[i] = wrapTap(v.Stack[i], fn)
+		}
+	case *nn.Reversed:
+		v.Sub = wrapTap(v.Sub, fn)
+	case *nn.Input:
+		// Input::Forward is `*output = input`, so a tap here would re-emit the
+		// pre-network block that dumpActivations already writes as
+		// "Output:Normalized", byte for byte. Two headers for one tensor make
+		// the block-by-block diff protocol ambiguous, so Input stays untapped.
+		return l
+	}
+	return &nn.WithTap{Sub: l, Fn: fn}
+}
+
 func buildLayer(l *tessdata.Layer, rnd *nn.Rand) (nn.Layer, error) {
 	switch l.Type {
 	case tessdata.LayerInput:

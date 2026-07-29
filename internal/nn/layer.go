@@ -23,6 +23,31 @@ type Layer interface {
 	Forward(in *Tensor) (*Tensor, error)
 }
 
+// Tap, if non-nil, is called with every layer's output as the graph runs. It
+// exists so a debugging harness can diff Cadmus's activations against
+// Tesseract's layer by layer; production callers leave it nil.
+type Tap func(layer Layer, out *Tensor)
+
+// WithTap wraps a layer so that tap sees its output. Wrapping rather than
+// threading a parameter through every Forward keeps the hot path free of a
+// nil check per layer per timestep.
+type WithTap struct {
+	Sub Layer
+	Fn  Tap
+}
+
+func (l *WithTap) Name() string    { return l.Sub.Name() }
+func (l *WithTap) NumOutputs() int { return l.Sub.NumOutputs() }
+
+func (l *WithTap) Forward(in *Tensor) (*Tensor, error) {
+	out, err := l.Sub.Forward(in)
+	if err != nil {
+		return nil, err
+	}
+	l.Fn(l.Sub, out)
+	return out, nil
+}
+
 // Input is NT_INPUT. Input::Forward is `*output = input`; returning the input
 // tensor unchanged is safe because no layer mutates its own input.
 type Input struct {

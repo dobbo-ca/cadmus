@@ -1,0 +1,145 @@
+diff --git a/src/lstm/convolve.cpp b/src/lstm/convolve.cpp
+index 66c126d..68fa4c7 100644
+--- a/src/lstm/convolve.cpp
++++ b/src/lstm/convolve.cpp
+@@ -25,6 +25,7 @@
+ 
+ #include <cstdint>
+ 
++#include "functions.h"
+ #include "networkscratch.h"
+ #include "serialis.h"
+ #include "tprintf.h"
+@@ -103,6 +104,10 @@ void Convolve::Forward(bool debug, const NetworkIO &input,
+       }
+     }
+   } while (dest_index.Increment());
++#if DEBUG_DETAIL > 0
++  tprintf("Output:%s\n", name_.c_str());
++  output->Print(0);
++#endif
+ #ifndef GRAPHICS_DISABLED
+   if (debug) {
+     DisplayForward(*output);
+diff --git a/src/lstm/fullyconnected.cpp b/src/lstm/fullyconnected.cpp
+index a0ee1b0..0acdeeb 100644
+--- a/src/lstm/fullyconnected.cpp
++++ b/src/lstm/fullyconnected.cpp
+@@ -176,7 +176,7 @@ void FullyConnected::Forward(bool debug, const NetworkIO &input,
+   }
+   output->ZeroInvalidElements();
+ #if DEBUG_DETAIL > 0
+-  tprintf("F Output:%s\n", name_.c_str());
++  tprintf("Output:%s\n", name_.c_str());
+   output->Print(10);
+ #endif
+ #ifndef GRAPHICS_DISABLED
+diff --git a/src/lstm/functions.h b/src/lstm/functions.h
+index 1e71b2f..2db3535 100644
+--- a/src/lstm/functions.h
++++ b/src/lstm/functions.h
+@@ -24,7 +24,7 @@
+ // Setting this to 1 or more causes massive dumps of debug data: weights,
+ // updates, internal calculations etc, and reduces the number of test iterations
+ // to a small number, so outputs can be diffed.
+-#define DEBUG_DETAIL 0
++#define DEBUG_DETAIL 1
+ #if DEBUG_DETAIL > 0
+ #  undef _OPENMP // Disable open mp to get the outputs in sync.
+ #endif
+diff --git a/src/lstm/input.cpp b/src/lstm/input.cpp
+index 33c05cb..b1862e7 100644
+--- a/src/lstm/input.cpp
++++ b/src/lstm/input.cpp
+@@ -17,6 +17,7 @@
+ 
+ #include "input.h"
+ 
++#include "functions.h"
+ #include "image.h"     // for Image
+ #include "imagedata.h"
+ #include "pageres.h"
+@@ -65,6 +66,10 @@ void Input::Forward(bool /*debug*/, const NetworkIO &input,
+                     const TransposedArray * /*input_transpose*/,
+                     NetworkScratch * /*scratch*/, NetworkIO *output) {
+   *output = input;
++#if DEBUG_DETAIL > 0
++  tprintf("Output:%s\n", name_.c_str());
++  output->Print(0);
++#endif
+ }
+ 
+ // Runs backward propagation of errors on the deltas line.
+@@ -90,6 +95,9 @@ Image Input::PrepareLSTMInputs(const ImageData &image_data, const Network *netwo
+     tprintf("Bad pix from ImageData!\n");
+     return nullptr;
+   }
++#if DEBUG_DETAIL > 0
++  tprintf("LSTMInput: %dx%d scale=%g\n", width, height, *image_scale);
++#endif
+   if (width < min_width || height < min_width) {
+     tprintf("Image too small to scale!! (%dx%d vs min width of %d)\n", width, height, min_width);
+     pix.destroy();
+diff --git a/src/lstm/lstm.cpp b/src/lstm/lstm.cpp
+index 7bfd19b..7ae4a08 100644
+--- a/src/lstm/lstm.cpp
++++ b/src/lstm/lstm.cpp
+@@ -488,11 +488,13 @@ void LSTM::Forward(bool debug, const NetworkIO &input,
+       ZeroVector<TFloat>(ns_, curr_output);
+     }
+   } while (src_index.Increment());
+-#if DEBUG_DETAIL > 0
++#if DEBUG_DETAIL > 1
+   tprintf("Source:%s\n", name_.c_str());
+   source_.Print(10);
+   tprintf("State:%s\n", name_.c_str());
+   state_.Print(10);
++#endif
++#if DEBUG_DETAIL > 0
+   tprintf("Output:%s\n", name_.c_str());
+   output->Print(10);
+ #endif
+diff --git a/src/lstm/maxpool.cpp b/src/lstm/maxpool.cpp
+index 72f09d9..ce981a1 100644
+--- a/src/lstm/maxpool.cpp
++++ b/src/lstm/maxpool.cpp
+@@ -17,6 +17,9 @@
+ 
+ #include "maxpool.h"
+ 
++#include "functions.h"
++#include "tprintf.h"
++
+ namespace tesseract {
+ 
+ Maxpool::Maxpool(const std::string &name, int ni, int x_scale, int y_scale)
+@@ -64,6 +67,10 @@ void Maxpool::Forward(bool /*debug*/, const NetworkIO &input,
+       }
+     }
+   } while (dest_index.Increment());
++#if DEBUG_DETAIL > 0
++  tprintf("Output:%s\n", name_.c_str());
++  output->Print(0);
++#endif
+ }
+ 
+ // Runs backward propagation of errors on the deltas line.
+diff --git a/src/lstm/networkio.cpp b/src/lstm/networkio.cpp
+index 8e1c667..832057a 100644
+--- a/src/lstm/networkio.cpp
++++ b/src/lstm/networkio.cpp
+@@ -379,11 +379,11 @@ void NetworkIO::Print(int num) const {
+   int num_features = NumFeatures();
+   for (int y = 0; y < num_features; ++y) {
+     for (int t = 0; t < Width(); ++t) {
+-      if (num == 0 || t < num || t + num >= Width()) {
++      if (true) {
+         if (int_mode_) {
+-          tprintf(" %g", static_cast<float>(i_[t][y]) / INT8_MAX);
++          tprintf(" %.9g", static_cast<float>(i_[t][y]) / INT8_MAX);
+         } else {
+-          tprintf(" %g", f_[t][y]);
++          tprintf(" %.9g", f_[t][y]);
+         }
+       }
+     }

@@ -128,10 +128,25 @@ func dumpDawgs(w io.Writer, m *tessdata.Model) {
 
 func main() {
 	var opt options
+	var activations bool
 	flag.BoolVar(&opt.unicharset, "unicharset", false, "print the unicharset table")
 	flag.BoolVar(&opt.recoder, "recoder", false, "print the unichar -> output-code mapping")
 	flag.BoolVar(&opt.dawgs, "dawgs", false, "print the DAWG lexicon summaries")
+	flag.BoolVar(&activations, "activations", false, "run a line image through the network and dump every layer's output")
 	flag.Parse()
+
+	if activations {
+		if flag.NArg() != 2 {
+			fmt.Fprintln(os.Stderr, "usage: cadmusdump -activations <model.traineddata> <line.png>")
+			os.Exit(2)
+		}
+		if err := dumpActivations(flag.Arg(0), flag.Arg(1), os.Stdout); err != nil {
+			fmt.Fprintln(os.Stderr, "cadmusdump:", err)
+			os.Exit(1)
+		}
+		return
+	}
+
 	if flag.NArg() != 1 {
 		fmt.Fprintln(os.Stderr, "usage: cadmusdump [-unicharset] [-recoder] [-dawgs] <model.traineddata>")
 		os.Exit(2)
