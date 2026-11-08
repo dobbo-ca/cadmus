@@ -82,7 +82,7 @@ func SkewAngle(b *Bitmap) float64 {
 	score := func(deg float64) float64 {
 		tan := math.Tan(deg * math.Pi / 180)
 		for x := range b.Width {
-			shift := (float64(x) - xc) * tan
+			shift := float64((float64(x) - xc) * tan)
 			floor := math.Floor(shift)
 			lo[x] = int(floor) + pad
 			frac[x] = shift - floor
@@ -95,7 +95,7 @@ func SkewAngle(b *Bitmap) float64 {
 		}
 		var sum float64
 		for _, n := range profile {
-			sum += n * n
+			sum += float64(n * n)
 		}
 		return sum
 	}
@@ -105,7 +105,7 @@ func SkewAngle(b *Bitmap) float64 {
 	best, bestScore := 0.0, math.Inf(-1)
 	sweep := func(centre, radius, step float64) {
 		for i := 0; i <= int(math.Round(2*radius/step)); i++ {
-			deg := centre - radius + float64(i)*step
+			deg := centre - radius + float64(float64(i)*step)
 			if s := score(deg); s > bestScore {
 				bestScore, best = s, deg
 			}
@@ -151,11 +151,11 @@ func Rotate(b *Bitmap, radians float64) *Bitmap {
 		ydif := float64(ycen - i)
 		for j := range b.Width {
 			xdif := float64(xcen - j)
-			x := xcen + int(float32(-xdif*cosa-ydif*sina))
+			x := xcen + int(float32(float64(-xdif*cosa)-float64(ydif*sina)))
 			if x < 0 || x >= b.Width {
 				continue
 			}
-			y := ycen + int(float32(-ydif*cosa+xdif*sina))
+			y := ycen + int(float32(float64(-ydif*cosa)+float64(xdif*sina)))
 			if y < 0 || y >= b.Height {
 				continue
 			}

@@ -29,13 +29,13 @@ func Tanh(x float64) float64 {
 	if x < 0 {
 		return -Tanh(-x)
 	}
-	x *= tableScale
+	x = float64(x * tableScale)
 	if x >= tableSize-1 {
 		return 1
 	}
 	i := int(x)
 	t0, t1 := tanhTable[i], tanhTable[i+1]
-	return t0 + (t1-t0)*(x-float64(i))
+	return t0 + float64((t1-t0)*(x-float64(i)))
 }
 
 // Logistic is Tesseract's tabulated logistic sigmoid. The negative branch is
@@ -45,13 +45,13 @@ func Logistic(x float64) float64 {
 	if x < 0 {
 		return 1 - Logistic(-x)
 	}
-	x *= tableScale
+	x = float64(x * tableScale)
 	if x >= tableSize-1 {
 		return 1
 	}
 	i := int(x)
 	l0, l1 := logisticTable[i], logisticTable[i+1]
-	return l0 + (l1-l0)*(x-float64(i))
+	return l0 + float64((l1-l0)*(x-float64(i)))
 }
 
 // TanhInPlace is FuncInplace<GFunc>.

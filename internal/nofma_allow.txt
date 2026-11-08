@@ -1,0 +1,6 @@
+# Source files allowed to compile to a fused multiply-add on arm64.
+# One per line: <path relative to the module root><TAB><reason>. Blank lines
+# and lines starting with # are ignored. Empty on purpose: Go fuses x*y+z on
+# arm64 but not on amd64, so a fused site makes one build differ from the
+# other. Spell the product out as float64(x*y) instead; list a file here only
+# if that is impossible, and say why.
