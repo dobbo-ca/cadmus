@@ -33,7 +33,7 @@ type Line struct {
 // ConfidencePercent is LTRResultIterator::Confidence composed with
 // Tesseract::SearchWords' kCertaintyScale: clip(100 + 5*7*certainty, 0, 100).
 func ConfidencePercent(certainty float64) float64 {
-	c := 100 + 5*CertaintyScale*certainty
+	c := 100 + float64(5*CertaintyScale*certainty)
 	if c < 0 {
 		return 0
 	}

@@ -103,7 +103,7 @@ func Sauvola(gray *Bitmap, window int, k float64) *Bitmap {
 		sy := mirrorIndex(y-border, gray.Height)
 		for x := range pw {
 			v := uint32(gray.At(mirrorIndex(x-border, gray.Width), sy))
-			s, q := v, float64(v)*float64(v)
+			s, q := v, float64(float64(v)*float64(v))
 			if x > 0 {
 				s += sums[y*pw+x-1]
 				q += squares[y*pw+x-1]
@@ -137,13 +137,13 @@ func Sauvola(gray *Bitmap, window int, k float64) *Bitmap {
 			square := squares[bot+x+incr] - squares[bot+x] - squares[top+x+incr] + squares[top+x]
 
 			mean := int(uint8(float32(sum) * meanNorm))
-			meanSquare := int(uint32(squareNorm*square + 0.5))
+			meanSquare := int(uint32(float64(squareNorm*square) + 0.5))
 			// var(v) = E(v^2) - E(v)^2. The two are quantised independently
 			// above, so guard the subtraction rather than trusting the identity.
 			variance := max(meanSquare-mean*mean, 0)
 			sd := float64(float32(math.Sqrt(float64(variance))))
 
-			threshold := int(float64(mean) * (1 - k*(1-sd/128)))
+			threshold := int(float64(mean) * (1 - float64(k*(1-float64(sd/128)))))
 			if int(gray.At(x, y)) < threshold {
 				out.Set(x, y, 1)
 			}

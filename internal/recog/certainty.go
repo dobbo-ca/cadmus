@@ -57,7 +57,7 @@ func ScoreSymbols(out *nn.Tensor, syms []Symbol, dictRatio float64) []Scored {
 	cert := func(t int) float64 {
 		row := out.Row(t)
 		p := float64(row[argmax(row)])
-		return (ProbToCertainty(p) + CertOffset) * dictRatio
+		return float64((ProbToCertainty(p) + CertOffset) * dictRatio)
 	}
 
 	scored := make([]Scored, 0, len(syms))
