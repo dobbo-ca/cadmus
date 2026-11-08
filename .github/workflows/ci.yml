@@ -20,7 +20,8 @@ jobs:
       - name: assert only allowlisted dependencies
         run: |
           allow=github.com/dobbo-ca/raster-go
-          bad=$( { go list -m -f '{{if not .Main}}{{.Path}}{{end}}' all 2>/dev/null; awk '{print $1}' go.sum; } | sort -u | grep -vxF "$allow" || true)
+          mods=$(go list -m -f '{{if not .Main}}{{.Path}}{{end}}' all)
+          bad=$( { echo "$mods"; [ -f go.sum ] && awk '{print $1}' go.sum; } | sort -u | grep -vxF -e "$allow" -e '' || true)
           if [ -n "$bad" ]; then
             echo "dependencies outside the allowlist ($allow):"
             echo "$bad"

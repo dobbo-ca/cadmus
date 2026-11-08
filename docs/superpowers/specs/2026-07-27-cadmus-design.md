@@ -493,6 +493,6 @@ individually before adoption; L5 ships no weights by default.
   loaders. L1 first, L5 later, never both at once.
 - **Both classical CV and textord** detection, phased — L2 first, L4 later, both
   retained.
-- **Zero third-party dependencies** for the core.
+- **Dependencies: stdlib plus github.com/dobbo-ca/raster-go only, enforced by the ci.yml allowlist** (amended 2026-11-07, inproc spec 2.1).
 - **CPU only.**
 - **Apache-2.0** with `NOTICE`.
