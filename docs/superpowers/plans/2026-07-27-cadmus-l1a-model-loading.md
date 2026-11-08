@@ -17,17 +17,16 @@ components together (`Softmax.no == recoder.code_range == null_char + 1`, and
 sanity check: per-matrix weight statistics, the unicharset table, the recoder
 map, and DAWG summaries.
 
-**Tech Stack:** Go 1.26, standard library only. Test-only oracles: `tesseract` /
+**Tech Stack:** Go 1.27, stdlib plus github.com/dobbo-ca/raster-go only, enforced by the ci.yml allowlist. Test-only oracles: `tesseract` /
 `combine_tessdata` (via Homebrew) for cross-checking component inventories and the
 recognizer trailer. Never linked, never shipped, never required in CI.
 
 ## Global Constraints
 
-- **Go 1.26.** `go.mod` declares `go 1.26`.
+- **Go 1.27.** `go.mod` declares `go 1.27`.
 - **Module path:** `github.com/dobbo-ca/cadmus`
-- **Zero third-party dependencies.** `go.mod`'s `require` block stays empty and
-  `go.sum` stays empty for the life of this plan. CI enforces the `go.sum` check
-  already. If a task seems to need a dependency, stop and raise it.
+- **Dependencies: stdlib plus github.com/dobbo-ca/raster-go only, enforced by the ci.yml allowlist.**
+  If a task seems to need any other dependency, stop and raise it.
 - **No cgo.** All packages build with `CGO_ENABLED=0`.
 - **Apache-2.0.** Every file that is a translation of Tesseract source carries the
   attribution header described in `internal/doc.go`, naming the Tesseract source
@@ -3847,7 +3846,7 @@ A FAIL here means a test uses `t.Fatal` where it should use `t.Skipf`.
 - [ ] **Prove no dependency crept in**
 
 ```bash
-test ! -s go.sum && echo "go.sum empty: ok"
+go list -m all   # only cadmus and github.com/dobbo-ca/raster-go
 CGO_ENABLED=0 go build ./... && echo "builds without cgo: ok"
 ```
 

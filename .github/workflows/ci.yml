@@ -10,16 +10,20 @@ jobs:
     env:
       CGO_ENABLED: 0
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
         with:
-          go-version: '1.26'
+          go-version-file: go.mod
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
-      - name: assert zero dependencies
+      - name: assert only allowlisted dependencies
         run: |
-          if [ -s go.sum ]; then
-            echo "go.sum is non-empty; a dependency was added"
+          allow=github.com/dobbo-ca/raster-go
+          mods=$(go list -m -f '{{if not .Main}}{{.Path}}{{end}}' all)
+          bad=$( { echo "$mods"; [ -f go.sum ] && awk '{print $1}' go.sum; } | sort -u | grep -vxF -e "$allow" -e '' || true)
+          if [ -n "$bad" ]; then
+            echo "dependencies outside the allowlist ($allow):"
+            echo "$bad"
             exit 1
           fi

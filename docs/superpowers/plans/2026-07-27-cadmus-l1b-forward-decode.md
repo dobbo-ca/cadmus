@@ -50,7 +50,7 @@ Tensor, Matrix, the activation tables, and one type per network layer).
 2. **Stage 2 — dictionary-weighted beam search** (Tasks 21-24). Only started once
    Stage 1's character error rate against the oracle is at its floor.
 
-**Tech Stack:** Go 1.26, standard library only. Test-only external tooling, all
+**Tech Stack:** Go 1.27, stdlib plus github.com/dobbo-ca/raster-go only, enforced by the ci.yml allowlist. Test-only external tooling, all
 of it used by golden-*generation* scripts and none of it required to run
 `go test ./...`:
 
@@ -67,10 +67,9 @@ of it used by golden-*generation* scripts and none of it required to run
 
 ## Global Constraints
 
-- **Go 1.26.** Module `github.com/dobbo-ca/cadmus`.
-- **Zero third-party dependencies.** `go.sum` must stay empty for the life of
-  this plan. CI already enforces this. If a task seems to need a dependency,
-  stop and raise it.
+- **Go 1.27.** Module `github.com/dobbo-ca/cadmus`.
+- **Dependencies: stdlib plus github.com/dobbo-ca/raster-go only, enforced by the ci.yml allowlist.**
+  If a task seems to need any other dependency, stop and raise it.
 - **No cgo.** Everything builds and tests with `CGO_ENABLED=0`.
 - **FLOAT weights only, from `tessdata_best`.** int8 (`kInt8Flag`, `TF_INT_MODE`)
   is out of scope; L1a already asserts the model is float and fails loudly
@@ -7539,7 +7538,7 @@ CGO_ENABLED=0 go build ./...
 CGO_ENABLED=0 go vet ./...
 CGO_ENABLED=0 go test ./...
 golangci-lint run
-[ -s go.sum ] && { echo "go.sum is non-empty; a dependency was added"; exit 1; } || echo "zero dependencies: ok"
+go list -m all   # only cadmus and github.com/dobbo-ca/raster-go
 ```
 
 All must pass. `go test ./...` must also pass with the fixtures removed — verify

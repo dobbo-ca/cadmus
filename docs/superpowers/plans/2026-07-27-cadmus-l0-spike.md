@@ -6,13 +6,13 @@
 
 **Architecture:** Two independent tracks over shared scaffolding. The spike track parses Tesseract's `.traineddata` container and LSTM network graph, producing a `cadmusdump` CLI that prints the layer tree — retiring the project's largest unknown before any of L1 is committed to. The L0 track builds the pure-Go image primitives (binarization, morphology, connected components, deskew, spatial index) that every detector depends on, verified against committed golden files generated from Leptonica.
 
-**Tech Stack:** Go 1.26, standard library only. Test-only external oracles: `tesseract` and `leptonica` (via Homebrew), used to generate committed goldens — never linked, never shipped, never required in CI.
+**Tech Stack:** Go 1.27, stdlib plus github.com/dobbo-ca/raster-go only, enforced by the ci.yml allowlist. Test-only external oracles: `tesseract` and `leptonica` (via Homebrew), used to generate committed goldens — never linked, never shipped, never required in CI.
 
 ## Global Constraints
 
-- **Go 1.26.** `go.mod` declares `go 1.26`.
+- **Go 1.27.** `go.mod` declares `go 1.27`.
 - **Module path:** `github.com/dobbo-ca/cadmus`
-- **Zero third-party dependencies in non-test code.** `go.mod` must have an empty `require` block for the life of this plan. If a task seems to need a dependency, stop and raise it.
+- **Dependencies: stdlib plus github.com/dobbo-ca/raster-go only, enforced by the ci.yml allowlist.** If a task seems to need any other dependency, stop and raise it.
 - **No cgo.** All packages must build with `CGO_ENABLED=0`. CI enforces this.
 - **Apache-2.0.** Every file that is a translation of Tesseract source carries a header naming the Tesseract source file it derives from (see Task 1 for the exact template). Files that are original work carry no such header.
 - **Oracles are test-only.** `tesseract` and Leptonica may be invoked by golden-*generation* tooling, never by tests themselves. `go test ./...` must pass on a machine with neither installed.
@@ -75,7 +75,7 @@ Then edit `go.mod` so it reads exactly:
 ```
 module github.com/dobbo-ca/cadmus
 
-go 1.26
+go 1.27
 ```
 
 - [ ] **Step 3: Add the fixture fetch script**
@@ -183,16 +183,13 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.26'
+          go-version: '1.27'
       - run: go build ./...
       - run: go vet ./...
       - run: go test ./...
-      - name: assert zero dependencies
+      - name: assert only allowlisted dependencies
         run: |
-          if [ -s go.sum ]; then
-            echo "go.sum is non-empty; a dependency was added"
-            exit 1
-          fi
+          # see .github/workflows/ci.yml: github.com/dobbo-ca/raster-go is the only allowed module
 ```
 
 - [ ] **Step 8: Verify the scaffolding**
